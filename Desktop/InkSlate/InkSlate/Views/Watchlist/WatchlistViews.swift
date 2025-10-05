@@ -452,7 +452,6 @@ struct SearchView: View {
                 }
             } catch {
                 await MainActor.run {
-                    print("Search error: \(error)")
                     if error is DecodingError {
                         errorMessage = "Unable to decode search results. Please try again."
                     } else if let urlError = error as? URLError {

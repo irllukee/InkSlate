@@ -29,6 +29,18 @@ class SharedStateManager: ObservableObject {
         showSplashScreen = false
     }
     
+    func resetToDefaults() {
+        // Reset splash screen
+        showSplashScreen = true
+        
+        // Reset loading state
+        loadingManager.stopLoading()
+        
+        // Reset auto save state
+        autoSaveManager.lastSaveStatus = "Ready"
+        autoSaveManager.isSaving = false
+    }
+    
 }
 
 // MARK: - Environment Key for Shared State

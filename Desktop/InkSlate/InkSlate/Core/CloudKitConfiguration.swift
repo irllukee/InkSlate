@@ -47,10 +47,8 @@ class CloudKitService {
     /// Checks if iCloud is available and user is signed in
     func isICloudAvailable() -> Bool {
         if FileManager.default.ubiquityIdentityToken != nil {
-            print("✅ iCloud is available and user is signed in")
             return true
         } else {
-            print("❌ iCloud is NOT available or user is not signed in")
             return false
         }
     }
@@ -70,15 +68,11 @@ class CloudKitService {
             // Build the container with the schema + configuration
             do {
                 let container = try ModelContainer(for: CloudKitConfig.schema, configurations: [ckConfig])
-                print("✅ CloudKit ModelContainer initialized successfully with sync enabled")
                 return container
             } catch {
-                print("⚠️ CloudKit container failed: \(error.localizedDescription)")
-                print("⚠️ Falling back to local storage...")
                 return createLocalContainer()
             }
         } else {
-            print("ℹ️ iCloud not available, using local storage")
             return createLocalContainer()
         }
     }
@@ -88,7 +82,6 @@ class CloudKitService {
         do {
             let localConfig = ModelConfiguration(schema: CloudKitConfig.schema, cloudKitDatabase: .none)
             let container = try ModelContainer(for: CloudKitConfig.schema, configurations: [localConfig])
-            print("ℹ️ Local-only storage initialized")
             return container
         } catch {
             // Last resort - this should rarely happen
@@ -102,10 +95,9 @@ class CloudKitService {
             do {
                 if container.mainContext.hasChanges {
                     try container.mainContext.save()
-                    print("💾 Context saved successfully")
                 }
             } catch {
-                print("⚠️ Failed to save context: \(error.localizedDescription)")
+                // Handle save error silently
             }
         }
     }
@@ -115,9 +107,8 @@ class CloudKitService {
         Task { @MainActor in
             do {
                 try container.mainContext.save()
-                print("🔄 Manual sync triggered")
             } catch {
-                print("⚠️ Manual sync failed: \(error.localizedDescription)")
+                // Handle sync error silently
             }
         }
     }
@@ -138,14 +129,12 @@ class NSAttributedStringTransformer: ValueTransformer {
             
             // CloudKit limit check (1 MB = 1,048,576 bytes)
             if data.count > 1_000_000 {
-                print("⚠️ AttributedString too large: \(data.count) bytes - using plain text fallback")
                 // Fallback to plain text
                 return attributedString.string.data(using: .utf8)
             }
             
             return data
         } catch {
-            print("⚠️ NSAttributedString → Data failed: \(error)")
             return nil
         }
     }
@@ -159,7 +148,6 @@ class NSAttributedStringTransformer: ValueTransformer {
                 documentAttributes: nil
             )
         } catch {
-            print("⚠️ Data → NSAttributedString failed: \(error)")
             return NSAttributedString(string: "")
         }
     }
@@ -168,3 +156,5 @@ class NSAttributedStringTransformer: ValueTransformer {
 // MARK: - Shared CloudKit-backed ModelContainer
 @MainActor
 let sharedModelContainer: ModelContainer = CloudKitService.shared.createModelContainer()
+
+

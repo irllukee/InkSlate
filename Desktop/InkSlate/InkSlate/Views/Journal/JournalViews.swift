@@ -257,6 +257,8 @@ struct NewJournalView: View {
     @State private var title = ""
     @State private var selectedColor = "#2E7D32"
     @State private var createdJournal: JournalBook?
+    @State private var showingError = false
+    @State private var errorMessage = ""
     
     private let colors = [
         "#2E7D32", // Green
@@ -358,6 +360,11 @@ struct NewJournalView: View {
             .sheet(item: $createdJournal) { journal in
                 EntryEditorView(book: journal, entry: nil)
             }
+            .alert("Error", isPresented: $showingError) {
+                Button("OK") { }
+            } message: {
+                Text(errorMessage)
+            }
         }
     }
     
@@ -370,7 +377,14 @@ struct NewJournalView: View {
         )
         
         modelContext.insert(journal)
-        createdJournal = journal
+        
+        do {
+            try modelContext.save()
+            createdJournal = journal
+        } catch {
+            errorMessage = "Failed to create journal: \(error.localizedDescription)"
+            showingError = true
+        }
     }
 }
 
@@ -509,6 +523,8 @@ struct EntryEditorView: View {
     @StateObject private var viewModel: EntryViewModel
     @State private var showingImagePicker = false
     @State private var showingPrompts = false
+    @State private var showingError = false
+    @State private var errorMessage = ""
     
     init(book: JournalBook, entry: JournalEntry?) {
         self.book = book
@@ -679,6 +695,11 @@ struct EntryEditorView: View {
                 viewModel.insertPrompt(prompt)
             })
         }
+        .alert("Error", isPresented: $showingError) {
+            Button("OK") { }
+        } message: {
+            Text(errorMessage)
+        }
     }
     
     private func saveEntry() {
@@ -717,7 +738,8 @@ struct EntryEditorView: View {
         do {
             try modelContext.save()
         } catch {
-            print("Failed to save journal entry: \(error)")
+            errorMessage = "Failed to save journal entry: \(error.localizedDescription)"
+            showingError = true
         }
     }
 }
@@ -836,8 +858,19 @@ class EntryViewModel: ObservableObject {
         self.attributedText = initialContent
         self.moodRating = Double(entry?.moodRating ?? 5)
         self.sleepQuality = Double(entry?.sleepQuality ?? 5)
-        self.bedTime = entry?.bedTime ?? Date()
-        self.wakeTime = entry?.wakeTime ?? Date()
+        
+        // Fix date initialization - use proper defaults for sleep times
+        if let entry = entry {
+            self.bedTime = entry.bedTime != Date.distantPast ? entry.bedTime : Date()
+            self.wakeTime = entry.wakeTime != Date.distantPast ? entry.wakeTime : Date()
+        } else {
+            // Default sleep times for new entries
+            let calendar = Calendar.current
+            let now = Date()
+            self.bedTime = calendar.date(bySettingHour: 22, minute: 0, second: 0, of: now) ?? now
+            self.wakeTime = calendar.date(bySettingHour: 7, minute: 0, second: 0, of: now) ?? now
+        }
+        
         self.isLucidDream = entry?.isLucidDream ?? false
         self.interpretationNotes = entry?.interpretationNotes ?? ""
         self.textViewModel = JournalRichTextViewModel(attributedString: initialContent)

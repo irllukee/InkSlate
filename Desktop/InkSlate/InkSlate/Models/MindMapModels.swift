@@ -10,7 +10,7 @@ import SwiftData
 
 // MARK: - Data Models
 @Model
-class MindMapNode: Identifiable {
+class MindMapNode {
     var title: String = "New Node"
     var notes: String = ""
     @Relationship(deleteRule: .cascade, inverse: \MindMapNode.parent) var children: [MindMapNode]? = []
@@ -31,7 +31,7 @@ class MindMapNode: Identifiable {
     }
     
     func removeChild(_ child: MindMapNode) {
-        children?.removeAll { $0.id == child.id }
+        children?.removeAll { $0 === child }
     }
     
     func getDepth() -> Int {
@@ -46,7 +46,7 @@ class MindMapNode: Identifiable {
 }
 
 @Model
-class MindMap: Identifiable {
+class MindMap {
     var name: String = "New Mind Map"
     @Relationship(deleteRule: .cascade, inverse: \MindMapNode.mindMap) var rootNode: MindMapNode?
     

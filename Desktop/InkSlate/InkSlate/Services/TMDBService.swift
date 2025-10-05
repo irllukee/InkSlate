@@ -108,7 +108,7 @@ class TMDBService: ObservableObject {
             let tvGenresResponse = try await getTVGenres()
             tvGenres = Dictionary(uniqueKeysWithValues: tvGenresResponse.genres.map { ($0.id, $0.name) })
         } catch {
-            print("Failed to load genres: \(error)")
+            // Handle genre loading error silently
         }
     }
 }

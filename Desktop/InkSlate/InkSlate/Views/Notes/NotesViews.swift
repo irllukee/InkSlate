@@ -13,7 +13,11 @@ import UIKit
 
 struct NotesListView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \Note.modifiedDate, order: .reverse) private var notes: [Note]
+    @Query(
+        filter: #Predicate<Note> { !$0.isDeleted },
+        sort: \Note.modifiedDate,
+        order: .reverse
+    ) private var notes: [Note]
     @Query(sort: \Folder.createdDate, order: .forward) private var folders: [Folder]
     @StateObject private var notesManager = NotesManager()
     @StateObject private var searchDebouncer = SearchDebouncer(delay: 0.3)
@@ -26,18 +30,19 @@ struct NotesListView: View {
     @State private var showingFolderSheet = false
     @State private var showingTrashSheet = false
     @State private var showingNewNote = false
+    @State private var newNote: Note?
     
     private var filteredNotes: [Note] {
+        let baseFilter = notes.filter { note in
+            notesManager.selectedFolder == nil || note.folder == notesManager.selectedFolder
+        }
+        
         if searchDebouncer.searchText.isEmpty {
-            return notes.filter { note in
-                !note.isDeleted && (notesManager.selectedFolder == nil || note.folder == notesManager.selectedFolder)
-            }
+            return baseFilter
         } else {
-            return notes.filter { note in
-                !note.isDeleted && 
-                (notesManager.selectedFolder == nil || note.folder == notesManager.selectedFolder) &&
-                (note.title.localizedCaseInsensitiveContains(searchDebouncer.searchText) ||
-                 note.attributedContent.string.localizedCaseInsensitiveContains(searchDebouncer.searchText))
+            return baseFilter.filter { note in
+                note.title.localizedCaseInsensitiveContains(searchDebouncer.searchText) ||
+                note.attributedContent.string.localizedCaseInsensitiveContains(searchDebouncer.searchText)
             }
         }
     }
@@ -66,8 +71,17 @@ struct NotesListView: View {
             .sheet(isPresented: $showingTrashSheet) {
                 TrashView_Simple(notesManager: notesManager, modelContext: modelContext)
             }
+            .sheet(isPresented: $showingNewNote) {
+                if let note = newNote {
+                    NoteDetailView_Simple(note: note)
+                }
+            }
             .sheet(item: $selectedNote) { note in
-                NoteDetailView_Simple(note: note)
+                if note.isPasswordProtected {
+                    PasswordAccessView(note: note, notesManager: notesManager, showingNoteDetail: .constant(false))
+                } else {
+                    NoteDetailView_Simple(note: note)
+                }
             }
     }
     
@@ -85,6 +99,7 @@ struct NotesListView: View {
             }
             .onDelete(perform: deleteNotes)
         }
+        .animation(.easeInOut(duration: 0.3), value: filteredNotes.count)
         .overlay(
             Group {
                 if filteredNotes.isEmpty {
@@ -92,6 +107,10 @@ struct NotesListView: View {
                 }
             }
         )
+        .onAppear {
+            // Cleanup expired notes on app launch
+            notesManager.cleanupExpiredNotes(with: modelContext)
+        }
     }
     
     private var emptyStateView: some View {
@@ -129,9 +148,7 @@ struct NotesListView: View {
             }
             Divider()
             ForEach(folders, id: \.persistentModelID) { folder in
-                Button(folder.name) {
-                    notesManager.selectedFolder = folder
-                }
+                FolderMenuButton(folder: folder, notesManager: notesManager, modelContext: modelContext)
             }
             Divider()
             Button("New Folder") {
@@ -165,9 +182,7 @@ struct NotesListView: View {
                 .disabled(selectedForDeletion.isEmpty)
             } else {
                 Button {
-                    guard !showingNewNote else { return }
-                    let newNote = notesManager.createNote(with: modelContext)
-                    selectedNote = newNote
+                    newNote = notesManager.createNote(with: modelContext)
                     showingNewNote = true
                 } label: {
                     Image(systemName: "square.and.pencil")
@@ -179,23 +194,30 @@ struct NotesListView: View {
     }
     
     private func deleteNotes(offsets: IndexSet) {
-        for index in offsets {
-            let note = filteredNotes[index]
+        let notesToDelete = offsets.map { filteredNotes[$0] }
+        
+        // Mark for deletion IMMEDIATELY (no delay)
+        for note in notesToDelete {
             notesManager.deleteNote(note, with: modelContext)
         }
+        
+        // The animation will happen automatically through SwiftUI's List updates
+        // when the @Query updates and filteredNotes changes
     }
     
     private func deleteSelectedNotes() {
-        filteredNotes.filter { selectedForDeletion.contains($0.persistentModelID) }
-            .forEach { notesManager.deleteNote($0, with: modelContext) }
+        let notesToDelete = filteredNotes.filter { selectedForDeletion.contains($0.persistentModelID) }
+        
+        // Mark for deletion IMMEDIATELY (no delay)
+        for note in notesToDelete {
+            notesManager.deleteNote(note, with: modelContext)
+        }
+        
         selectedForDeletion.removeAll()
         editMode = .inactive
-        try? modelContext.save()
         
-        // Force refresh of the view
-        DispatchQueue.main.async {
-            self.searchText = self.searchText
-        }
+        // The animation will happen automatically through SwiftUI's List updates
+        // when the @Query updates and filteredNotes changes
     }
 }
 
@@ -204,6 +226,7 @@ struct NoteRowView: View {
     let note: Note
     @State private var showingPasswordPrompt = false
     @State private var showingLockOptions = false
+    @State private var showingNoteDetail = false
     @Environment(\.modelContext) private var modelContext
     @StateObject private var notesManager = NotesManager()
     
@@ -241,10 +264,15 @@ struct NoteRowView: View {
                     }
                 }
                 
-                if !note.attributedContent.string.isEmpty {
+                if !note.isPasswordProtected && !note.attributedContent.string.isEmpty {
                     Text(note.attributedContent.string)
                         .font(DesignSystem.Typography.caption)
                         .foregroundColor(DesignSystem.Colors.textSecondary)
+                        .lineLimit(1)
+                } else if note.isPasswordProtected {
+                    Text("🔒 Password Protected")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(.orange)
                         .lineLimit(1)
                 }
             }
@@ -270,11 +298,24 @@ struct NoteRowView: View {
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 16)
+        .onTapGesture {
+            if note.isPasswordProtected {
+                showingPasswordPrompt = true
+            } else {
+                showingNoteDetail = true
+            }
+        }
         .onLongPressGesture {
             showingLockOptions = true
         }
         .sheet(isPresented: $showingLockOptions) {
             LockOptionsView(note: note, notesManager: notesManager)
+        }
+        .sheet(isPresented: $showingPasswordPrompt) {
+            PasswordAccessView(note: note, notesManager: notesManager, showingNoteDetail: $showingNoteDetail)
+        }
+        .sheet(isPresented: $showingNoteDetail) {
+            NoteDetailView_Simple(note: note)
         }
     }
 }
@@ -320,16 +361,24 @@ struct FolderManagementView_Simple: View {
     let modelContext: ModelContext
     @Environment(\.dismiss) private var dismiss
     @Query private var folders: [Folder]
+    @State private var showingEditFolder: Folder?
     
     var body: some View {
         NavigationView {
             List {
                 ForEach(folders, id: \.persistentModelID) { folder in
-                    Text(folder.name)
+                    FolderManagementRow(folder: folder, modelContext: modelContext, showingEditFolder: $showingEditFolder)
                 }
                 .onDelete { indexSet in
                     for index in indexSet {
-                        modelContext.delete(folders[index])
+                        let folder = folders[index]
+                        // Move notes to "All Notes" (no folder)
+                        if let notes = folder.notes {
+                            for note in notes {
+                                note.folder = nil
+                            }
+                        }
+                        modelContext.delete(folder)
                     }
                     try? modelContext.save()
                 }
@@ -342,6 +391,163 @@ struct FolderManagementView_Simple: View {
                 }
             }
         }
+        .sheet(item: $showingEditFolder) { folder in
+            EditFolderView(folder: folder, modelContext: modelContext)
+        }
+    }
+}
+
+struct FolderManagementRow: View {
+    let folder: Folder
+    let modelContext: ModelContext
+    @Binding var showingEditFolder: Folder?
+    @State private var showingDeleteAlert = false
+    
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(folder.name)
+                    .font(.headline)
+                
+                if let notes = folder.notes, !notes.isEmpty {
+                    Text("\(notes.count) note\(notes.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            Spacer()
+            
+            Button("Edit") {
+                showingEditFolder = folder
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            
+            Button("Delete") {
+                showingDeleteAlert = true
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .foregroundColor(.red)
+        }
+        .alert("Delete Folder", isPresented: $showingDeleteAlert) {
+            Button("Delete", role: .destructive) {
+                deleteFolder()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Are you sure you want to delete this folder? Notes in this folder will be moved to 'All Notes'.")
+        }
+    }
+    
+    private func deleteFolder() {
+        // Move notes to "All Notes" (no folder)
+        if let notes = folder.notes {
+            for note in notes {
+                note.folder = nil
+            }
+        }
+        modelContext.delete(folder)
+        try? modelContext.save()
+    }
+}
+
+struct EditFolderView: View {
+    let folder: Folder
+    let modelContext: ModelContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var folderName: String
+    
+    init(folder: Folder, modelContext: ModelContext) {
+        self.folder = folder
+        self.modelContext = modelContext
+        self._folderName = State(initialValue: folder.name)
+    }
+    
+    var body: some View {
+        NavigationView {
+            VStack {
+                TextField("Folder Name", text: $folderName)
+                    .textFieldStyle(.roundedBorder)
+                    .padding()
+                
+                Spacer()
+            }
+            .navigationTitle("Edit Folder")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        folder.name = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        try? modelContext.save()
+                        dismiss()
+                    }
+                    .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+}
+
+struct FolderMenuButton: View {
+    let folder: Folder
+    let notesManager: NotesManager
+    let modelContext: ModelContext
+    @State private var showingEditFolder: Folder?
+    @State private var showingDeleteAlert = false
+    @State private var showingContextMenu = false
+    
+    var body: some View {
+        Button(folder.name) {
+            notesManager.selectedFolder = folder
+        }
+        .onLongPressGesture {
+            showingContextMenu = true
+        }
+        .confirmationDialog("Folder Options", isPresented: $showingContextMenu) {
+            Button("Edit Folder") {
+                showingEditFolder = folder
+            }
+            
+            Button("Delete Folder", role: .destructive) {
+                showingDeleteAlert = true
+            }
+            
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Choose an action for '\(folder.name)'")
+        }
+        .sheet(item: $showingEditFolder) { folder in
+            EditFolderView(folder: folder, modelContext: modelContext)
+        }
+        .alert("Delete Folder", isPresented: $showingDeleteAlert) {
+            Button("Delete", role: .destructive) {
+                deleteFolder()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Are you sure you want to delete this folder? Notes in this folder will be moved to 'All Notes'.")
+        }
+    }
+    
+    private func deleteFolder() {
+        // Move notes to "All Notes" (no folder)
+        if let notes = folder.notes {
+            for note in notes {
+                note.folder = nil
+            }
+        }
+        modelContext.delete(folder)
+        try? modelContext.save()
+        
+        // Clear selection if this folder was selected
+        if notesManager.selectedFolder?.persistentModelID == folder.persistentModelID {
+            notesManager.selectedFolder = nil
+        }
     }
 }
 
@@ -350,18 +556,31 @@ struct TrashView_Simple: View {
     let modelContext: ModelContext
     @Environment(\.dismiss) private var dismiss
     @Query(filter: #Predicate<Note> { $0.isDeleted == true }) private var deletedNotes: [Note]
+    @State private var showingRestoreAlert = false
+    @State private var noteToRestore: Note?
     
     var body: some View {
         NavigationView {
             List {
                 ForEach(deletedNotes, id: \.persistentModelID) { note in
-                    Text(note.safeTitle)
+                    TrashNoteRowView(note: note, notesManager: notesManager)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button("Restore") {
+                                noteToRestore = note
+                                showingRestoreAlert = true
+                            }
+                            .tint(.green)
+                            
+                            Button("Delete Forever", role: .destructive) {
+                                notesManager.permanentlyDelete(note, with: modelContext)
+                            }
+                            .tint(.red)
+                        }
                 }
                 .onDelete { indexSet in
                     for index in indexSet {
-                        modelContext.delete(deletedNotes[index])
+                        notesManager.permanentlyDelete(deletedNotes[index], with: modelContext)
                     }
-                    try? modelContext.save()
                 }
             }
             .navigationTitle("Recently Deleted")
@@ -370,8 +589,76 @@ struct TrashView_Simple: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Empty Trash") {
+                        for note in deletedNotes {
+                            notesManager.permanentlyDelete(note, with: modelContext)
+                        }
+                    }
+                    .disabled(deletedNotes.isEmpty)
+                }
             }
         }
+        .alert("Restore Note", isPresented: $showingRestoreAlert) {
+            Button("Restore") {
+                if let note = noteToRestore {
+                    notesManager.restoreNote(note, with: modelContext)
+                }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Are you sure you want to restore this note?")
+        }
+    }
+}
+
+struct TrashNoteRowView: View {
+    let note: Note
+    let notesManager: NotesManager
+    
+    private var daysUntilExpiration: Int {
+        guard let expirationDate = Calendar.current.date(byAdding: .day, value: 30, to: note.deletedDate) else {
+            return 0
+        }
+        let daysLeft = Calendar.current.dateComponents([.day], from: Date(), to: expirationDate).day ?? 0
+        return max(0, daysLeft)
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(note.safeTitle)
+                    .font(.headline)
+                
+                Spacer()
+                
+                if daysUntilExpiration <= 3 {
+                    Text("Expires in \(daysUntilExpiration) day\(daysUntilExpiration == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(4)
+                } else {
+                    Text("\(daysUntilExpiration) days left")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            Text("Deleted \(formatDate(note.deletedDate))")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }
 
@@ -456,7 +743,7 @@ struct NoteDetailView_Simple: View {
         do {
             try modelContext.save()
         } catch {
-            print("Failed to save note: \(error)")
+            // Handle save error silently
         }
     }
     
@@ -548,6 +835,117 @@ struct LockOptionsView: View {
     }
 }
 
+// MARK: - Password Access View
+struct PasswordAccessView: View {
+    let note: Note
+    let notesManager: NotesManager
+    @Binding var showingNoteDetail: Bool
+    @Environment(\.dismiss) var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @State private var password = ""
+    @State private var showingError = false
+    @State private var errorMessage = ""
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                VStack(spacing: 16) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 60))
+                        .foregroundColor(.orange)
+                    
+                    Text("Password Required")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    
+                    Text("Enter password to access this note")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                
+                VStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Password")
+                            .font(.headline)
+                        SecureField("Enter password", text: $password)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit {
+                                verifyPassword()
+                            }
+                    }
+                    
+                    if !note.passwordHint.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Password Hint")
+                                .font(.headline)
+                            Text(note.passwordHint)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .padding()
+                                .background(Color(.systemGray6))
+                                .cornerRadius(8)
+                        }
+                    }
+                    
+                    // Warning about no password recovery
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("Important")
+                                .font(.headline)
+                                .foregroundColor(.orange)
+                        }
+                        
+                        Text("⚠️ There is no password recovery option. If you forget your password, this note cannot be opened.")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .padding()
+                            .background(Color.orange.opacity(0.1))
+                            .cornerRadius(8)
+                    }
+                }
+                
+                Spacer()
+            }
+            .padding(24)
+            .navigationTitle("Access Note")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Open") {
+                        verifyPassword()
+                    }
+                    .disabled(password.isEmpty)
+                }
+            }
+        }
+        .alert("Incorrect Password", isPresented: $showingError) {
+            Button("OK") { }
+        } message: {
+            Text(errorMessage)
+        }
+    }
+    
+    private func verifyPassword() {
+        if notesManager.verifyPassword(for: note, password: password) {
+            dismiss()
+            showingNoteDetail = true
+        } else {
+            errorMessage = "Incorrect password. Please try again."
+            showingError = true
+            password = ""
+        }
+    }
+}
+
 // MARK: - Password Prompt View
 struct PasswordPromptView: View {
     let note: Note
@@ -594,6 +992,24 @@ struct PasswordPromptView: View {
                             .font(.headline)
                         TextField("Enter a hint", text: $hint)
                             .textFieldStyle(.roundedBorder)
+                    }
+                    
+                    // Warning about no password recovery
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("Important")
+                                .font(.headline)
+                                .foregroundColor(.orange)
+                        }
+                        
+                        Text("⚠️ There is no password recovery option. If you forget your password, this note cannot be opened.")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                            .padding()
+                            .background(Color.orange.opacity(0.1))
+                            .cornerRadius(8)
                     }
                 }
                 

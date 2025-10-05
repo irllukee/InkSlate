@@ -43,10 +43,9 @@ struct InkSlateApp: App {
             do {
                 if sharedModelContainer.mainContext.hasChanges {
                     try sharedModelContainer.mainContext.save()
-                    print("💾 Context saved successfully")
                 }
             } catch {
-                print("⚠️ Failed to save context: \(error.localizedDescription)")
+                // Handle save error silently
             }
         }
     }

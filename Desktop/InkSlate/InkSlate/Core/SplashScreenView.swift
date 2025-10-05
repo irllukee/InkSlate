@@ -69,6 +69,6 @@ struct SplashScreenView: View {
 
 #Preview {
     SplashScreenView {
-        print("Splash screen completed")
+        // Splash screen completed
     }
 }

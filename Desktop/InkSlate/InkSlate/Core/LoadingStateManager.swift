@@ -73,7 +73,6 @@ class AutoSaveManager: ObservableObject {
                 self.isSaving = false
                 self.lastSaveStatus = "Saved at \(DateFormatter.timeFormatter.string(from: self.lastSaveTime))"
             } catch {
-                print("Failed to save: \(error)")
                 self.isSaving = false
                 self.lastSaveStatus = "Save failed"
             }

@@ -62,7 +62,7 @@ class Note {
                 let data = try newValue.data(from: NSRange(location: 0, length: newValue.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
                 content = data
             } catch {
-                print("Failed to save attributed string: \(error)")
+                // Handle save error silently
             }
         }
     }
@@ -113,10 +113,8 @@ class NotesManager: ObservableObject {
             
             if needsMigration {
                 try modelContext.save()
-                print("✅ Migrated notes with invalid data")
             }
         } catch {
-            print("❌ Failed to migrate notes: \(error)")
             // If migration fails, set the reset flag for next launch
             UserDefaults.standard.set(true, forKey: "NeedsDataReset")
         }
@@ -132,6 +130,28 @@ class NotesManager: ObservableObject {
         note.isDeleted = true
         note.deletedDate = Date()
         try? modelContext.save()
+    }
+    
+    // Auto-cleanup expired notes (30 days)
+    func cleanupExpiredNotes(with modelContext: ModelContext) {
+        let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+        let descriptor = FetchDescriptor<Note>(
+            predicate: #Predicate<Note> { note in
+                note.isDeleted == true && note.deletedDate < thirtyDaysAgo
+            }
+        )
+        
+        do {
+            let expiredNotes = try modelContext.fetch(descriptor)
+            for note in expiredNotes {
+                modelContext.delete(note)
+            }
+            if !expiredNotes.isEmpty {
+                try modelContext.save()
+            }
+        } catch {
+            // Handle cleanup error silently
+        }
     }
 
     func restoreNote(_ note: Note, with modelContext: ModelContext) {
