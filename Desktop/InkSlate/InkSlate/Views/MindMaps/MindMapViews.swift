@@ -340,27 +340,18 @@ struct NodeBubbleView: View {
     let onTap: () -> Void
     let onLongPress: () -> Void
     
-    // Calculate dynamic sizing based on text length
+    // Fixed bubble size for all nodes
     private var bubbleSize: CGFloat {
-        let titleLength = node.title.count
-        let baseSize: CGFloat = 60
-        let minSize: CGFloat = 50
-        let maxSize: CGFloat = 120
-        
-        // Adjust size based on text length
-        let sizeMultiplier = max(1.0, Double(titleLength) / 8.0)
-        let calculatedSize = baseSize * sizeMultiplier
-        
-        return max(minSize, min(maxSize, calculatedSize))
+        return 60 // Fixed size for all bubbles
     }
     
     private var fontSize: CGFloat {
         let titleLength = node.title.count
-        let baseFontSize: CGFloat = 14
+        let baseFontSize: CGFloat = 16
         
-        // Reduce font size for longer text
-        if titleLength > 12 {
-            return max(10, baseFontSize - CGFloat(titleLength - 12) * 0.3)
+        // Reduce font size for longer text to fit in fixed bubble
+        if titleLength > 8 {
+            return max(8, baseFontSize - CGFloat(titleLength - 8) * 0.4)
         }
         return baseFontSize
     }
