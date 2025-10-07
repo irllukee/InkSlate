@@ -1,6 +1,6 @@
-# Slate - Personal Productivity App
+# InkSlate - Personal Productivity App
 
-A minimalist, modern iOS app designed to help you organize your life with a clean, intuitive interface. Slate combines multiple productivity tools into one cohesive experience.
+A minimalist, modern iOS app designed to help you organize your life with a clean, intuitive interface. InkSlate combines multiple productivity tools into one cohesive experience.
 
 ## ✨ Features
 
@@ -10,9 +10,14 @@ A minimalist, modern iOS app designed to help you organize your life with a clea
 - **Modern Aesthetics**: White background with carefully chosen fonts and spacing
 
 ### 📝 **Notes**
-- **Quick Capture**: Instantly jot down thoughts and ideas
+- **Rich Text Editing**: Full text formatting with bullet points, indentation, and styling
+- **Password Protection**: Secure your sensitive notes with optional password protection
+- **Folder Organization**: Organize notes into custom folders for better structure
+- **Search Functionality**: Find notes quickly with real-time search
+- **Trash Management**: Safely delete and restore notes with trash system
 - **Organized Storage**: All notes stored locally with SwiftData
 - **Clean Interface**: Simple, focused writing experience
+- **CloudKit Sync**: Automatic synchronization across all your Apple devices
 
 ### 💭 **Quotes**
 - **Inspiration Collection**: Save and organize meaningful quotes
@@ -27,21 +32,43 @@ A minimalist, modern iOS app designed to help you organize your life with a clea
 - **Kitchen Integration**: Fridge items, spice rack, and shopping cart management
 
 ### 🗺️ **Places**
-- **Location Tracking**: Save and organize important places
-- **Travel Planning**: Keep track of destinations and locations of interest
+- **Location Tracking**: Save and organize important places with detailed information
+- **Category Management**: Organize places by custom categories (restaurants, activities, etc.)
+- **Rich Details**: Store addresses, ratings, photos, visit dates, and personal notes
+- **Comprehensive Rating System**: Rate places on multiple criteria (overall, price, quality, atmosphere, fun factor, scenery)
+- **Visit Tracking**: Keep track of when you visited and whether you'd return
+- **Photo Support**: Add photos to remember your experiences
+- **Food Type & Timing**: Track food types and best times to visit
+- **Modern UI**: Clean, minimalist interface with black and grey color scheme
+- **CloudKit Sync**: Automatic synchronization across all your Apple devices
 
 ### 📺 **Watchlist**
 - **Entertainment Tracking**: Manage movies, shows, and content to watch
 - **TMDB Integration**: Connect with The Movie Database for rich content information
-- **Organized Lists**: Keep track of what you want to watch and what you've seen
+- **Live Search**: Real-time search through thousands of movies and TV shows
+- **Popular Content**: Browse trending movies and TV shows in horizontal scrollable format
+- **Favorites System**: Mark content as favorites and create custom lists
+- **Detailed Information**: View ratings, descriptions, cast, and more with optimized layouts
+- **Personal Ratings**: Rate content you've watched
+- **Star Button**: Add/remove items from watchlist directly from detail views
+- **List View**: Clean list interface for managing your watchlist
+- **CloudKit Sync**: Automatic synchronization across all your Apple devices
 
 ### 🧠 **Mind Maps**
 - **Visual Thinking**: Create and organize mind maps for brainstorming
 - **Flexible Structure**: Adapt to your thinking process and ideas
 
 ### 📊 **Journal**
-- **Personal Reflection**: Daily journaling and reflection
-- **Thought Organization**: Structure your thoughts and experiences
+- **Daily Journaling**: Create and maintain daily journal entries with streak tracking
+- **Writing Prompts**: Get inspiration with categorized prompts (Personal Growth, Relationships, Creative, Reflection, Gratitude, Planning)
+- **Prompt Categories**: Browse and select specific prompts from each category
+- **Rich Text Editing**: Full text formatting with bullet points, indentation, and styling
+- **Word Count**: Live word counting for your entries
+- **Streak Tracking**: Visual streak counter to motivate daily writing (current and longest streaks)
+- **Multiple Journals**: Create different journals for different purposes
+- **Daily Journal Pinned**: Default daily journal always appears at the top
+- **Date Editing**: Edit entry dates with intuitive date picker
+- **CloudKit Sync**: Automatic synchronization across all your Apple devices
 
 ### ⚙️ **Settings & Profile**
 - **Customization**: Personalize your app experience
@@ -61,9 +88,18 @@ Slate features a comprehensive design system that ensures consistency across all
 
 - **SwiftUI**: Built with Apple's modern declarative UI framework
 - **SwiftData**: Local data persistence with Apple's latest data framework
+- **CloudKit Integration**: Seamless data synchronization across Apple devices
 - **iOS 18.5+**: Optimized for the latest iOS features
 - **Real-time Updates**: Live time display and dynamic content
 - **Responsive Design**: Adapts to different screen sizes and orientations
+- **TMDB API**: Integration with The Movie Database for entertainment content
+- **Rich Text Support**: Full text formatting and editing capabilities
+- **Photo Integration**: Native photo picker and storage
+- **Security**: Optional password protection for sensitive content
+- **Search Debouncing**: Optimized search performance with debounced input
+- **Async Image Loading**: Efficient image loading and caching
+- **Modern UI Components**: Custom components with consistent design system
+- **Data Models**: Comprehensive SwiftData models for all features
 
 ## 📱 **Screenshots**
 
@@ -85,7 +121,7 @@ Slate features a comprehensive design system that ensures consistency across all
 
 2. Open the project in Xcode:
    ```bash
-   open Slate.xcodeproj
+   open InkSlate.xcodeproj
    ```
 
 3. Build and run on the iOS Simulator or your device
@@ -101,19 +137,24 @@ Slate features a comprehensive design system that ensures consistency across all
 The app follows a clean, modular architecture:
 
 ```
-Slate/
+InkSlate/
 ├── Core/                    # App core functionality
-│   ├── SlateApp.swift      # App entry point
+│   ├── InkSlateApp.swift  # App entry point
 │   ├── ContentView.swift   # Main content coordinator
 │   ├── DesignSystem.swift  # Design system definitions
-│   └── LoadingStateManager.swift
+│   ├── LoadingStateManager.swift
+│   ├── CloudKitConfiguration.swift
+│   └── SharedStateManager.swift
 ├── Models/                 # Data models
 │   ├── NotesModels.swift
 │   ├── QuotesModels.swift
 │   ├── RecipeModels.swift
 │   ├── PlacesModels.swift
 │   ├── WatchlistModels.swift
-│   └── JournalModels.swift
+│   ├── JournalModels.swift
+│   ├── JournalPromptModels.swift
+│   ├── MindMapModels.swift
+│   └── TodoModels.swift
 ├── Views/                  # SwiftUI views
 │   ├── Items/             # Homescreen
 │   ├── Notes/             # Notes feature
@@ -161,4 +202,4 @@ If you encounter any issues or have questions, please:
 
 ---
 
-**Slate** - Organize your life, one feature at a time. ✨
+**InkSlate** - Organize your life, one feature at a time. ✨

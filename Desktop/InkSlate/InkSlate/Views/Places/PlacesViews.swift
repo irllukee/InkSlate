@@ -2,13 +2,19 @@ import SwiftUI
 import SwiftData
 import UIKit
 
+// MARK: - Date Formatter
+private let dateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .medium
+    return formatter
+}()
+
 // MARK: - Main Places View
 struct PlacesMainView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var allCategories: [PlaceCategory]
     
     @State private var selectedTab: PlaceType = .restaurant
-    @State private var searchText = ""
     
     enum PlaceType: String, CaseIterable {
         case restaurant = "Restaurants"
@@ -23,25 +29,44 @@ struct PlacesMainView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // Type tabs
-                Picker("Type", selection: $selectedTab) {
-                    ForEach(PlaceType.allCases, id: \.self) { type in
-                        Text(type.rawValue).tag(type)
+                // Header
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Places")
+                            .font(.largeTitle)
+                            .fontWeight(.bold)
+                        Spacer()
                     }
+                    Text("Track restaurants, activities, and favorite spots")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
                 }
-                .pickerStyle(.segmented)
-                .padding()
-                
-                // Category view
+                .padding(.horizontal)
+                .padding(.top, 16)
+
+                // Segmented control in a subtle card
+                HStack {
+                    Picker("Type", selection: $selectedTab) {
+                        ForEach(PlaceType.allCases, id: \.self) { type in
+                            Text(type.rawValue).tag(type)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+
+                // Content
                 PlacesCategoryView(
                     type: selectedTab.rawValue.lowercased(),
-                    categories: categories,
-                    searchText: $searchText
+                    categories: categories
                 )
             }
-            .navigationTitle("Places & Reviews")
+            .navigationTitle("Places")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: "Search places")
+            .toolbarColorScheme(.dark)
+            .accentColor(.black)
+            .navigationBarBackButtonHidden(false)
         }
     }
 }
@@ -50,14 +75,10 @@ struct PlacesMainView: View {
 struct PlacesCategoryView: View {
     let type: String
     let categories: [PlaceCategory]
-    @Binding var searchText: String
     @Environment(\.modelContext) private var modelContext
     @Query private var allPlaces: [Place]
     
     @State private var showingNewCategory = false
-    @State private var selectedCategory: PlaceCategory?
-    @State private var isEditing = false
-    @State private var selectedCategoriesToDelete: Set<PlaceCategory> = []
     
     private var places: [Place] {
         allPlaces.filter { $0.category?.type == type }
@@ -73,124 +94,73 @@ struct PlacesCategoryView: View {
     
     var body: some View {
         List {
-            // Wishlist section
-            Section("Want to Try") {
+            Section("Quick Access") {
                 NavigationLink(destination: PlacesListView(
                     category: nil,
                     type: type,
-                    wishlistOnly: true,
-                    searchText: searchText
+                    wishlistOnly: true
                 )) {
-                    HStack {
+                    Label {
+                        HStack {
+                            Text("Wishlist")
+                            Spacer()
+                            Text("\(wishlistCount)")
+                                .foregroundColor(.secondary)
+                        }
+                    } icon: {
                         Image(systemName: "star.fill")
-                            .foregroundColor(.yellow)
-                        Text("Wishlist")
-                        Spacer()
-                        Text("\(wishlistCount)")
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.black)
                     }
                 }
-            }
-            
-            // Favorites section
-            Section("Favorites") {
+                
                 NavigationLink(destination: PlacesListView(
                     category: nil,
                     type: type,
-                    favoritesOnly: true,
-                    searchText: searchText
+                    favoritesOnly: true
                 )) {
-                    HStack {
+                    Label {
+                        HStack {
+                            Text("Top Rated")
+                            Spacer()
+                            Text("\(favoritesCount)")
+                                .foregroundColor(.secondary)
+                        }
+                    } icon: {
                         Image(systemName: "heart.fill")
-                            .foregroundColor(.red)
-                        Text("Top Rated")
-                        Spacer()
-                        Text("\(favoritesCount)")
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.black)
                     }
                 }
             }
             
-            // Categories
             Section("Categories") {
-                ForEach(categories, id: \.id) { category in
-                    HStack {
-                        if isEditing {
-                            Button {
-                                toggleSelection(for: category)
-                            } label: {
-                                Image(systemName: selectedCategoriesToDelete.contains(category) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundColor(.accentColor)
-                            }
-                            .buttonStyle(PlainButtonStyle())
+                ForEach(categories) { category in
+                    NavigationLink(destination: PlacesListView(
+                        category: category,
+                        type: type
+                    )) {
+                        HStack {
+                            Image(systemName: iconForType(type))
+                                .foregroundColor(.black)
+                            Text(category.name)
+                            Spacer()
+                            Text("\(places.filter { $0.category?.id == category.id }.count)")
+                                .foregroundColor(.secondary)
                         }
-                        
-                        NavigationLink(destination: PlacesListView(
-                            category: category,
-                            type: type,
-                            searchText: searchText
-                        )) {
-                            HStack {
-                                Image(systemName: iconForType(type))
-                                    .foregroundColor(.blue)
-                                Text(category.name)
-                                Spacer()
-                                Text("\(places.filter { $0.category?.id == category.id }.count)")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .disabled(isEditing)
                     }
                 }
-                .onDelete(perform: isEditing ? nil : deleteCategories)
+                .onDelete(perform: deleteCategories)
                 
-                if !isEditing {
-                    Button {
-                        showingNewCategory = true
-                    } label: {
-                        Label("New Category", systemImage: "plus.circle.fill")
-                            .foregroundColor(.blue)
-                    }
-                }
-            }
-            
-            if categories.isEmpty {
-                Section {
-                    Text("No categories yet. Create one to get started!")
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
+                Button {
+                    showingNewCategory = true
+                } label: {
+                    Label("New Category", systemImage: "plus.circle.fill")
+                        .foregroundColor(.black)
                 }
             }
         }
-        .navigationTitle("Categories")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                HStack {
-                    if isEditing {
-                        Button("Delete Selected (\(selectedCategoriesToDelete.count))") {
-                            deleteSelectedCategories()
-                        }
-                        .disabled(selectedCategoriesToDelete.isEmpty)
-                        .foregroundColor(.red)
-                        
-                        Button("Delete All", role: .destructive) {
-                            deleteAllCategories()
-                        }
-                        .disabled(categories.isEmpty)
-                        
-                        Button("Cancel") {
-                            isEditing = false
-                            selectedCategoriesToDelete.removeAll()
-                        }
-                    } else {
-                        Button("Edit") {
-                            isEditing = true
-                        }
-                    }
-                }
-            }
-        }
+        .listStyle(InsetGroupedListStyle())
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemGroupedBackground))
         .sheet(isPresented: $showingNewCategory) {
             NewCategoryView(type: type)
         }
@@ -205,51 +175,13 @@ struct PlacesCategoryView: View {
         }
     }
     
-    private func toggleSelection(for category: PlaceCategory) {
-        if selectedCategoriesToDelete.contains(category) {
-            selectedCategoriesToDelete.remove(category)
-        } else {
-            selectedCategoriesToDelete.insert(category)
-        }
-    }
-    
-    private func deleteSelectedCategories() {
-        for category in selectedCategoriesToDelete {
-            // First, remove the category from all places that use it
-            let placesInCategory = places.filter { $0.category?.id == category.id }
-            for place in placesInCategory {
-                place.category = nil
-            }
-            // Then delete the category
-            modelContext.delete(category)
-        }
-        selectedCategoriesToDelete.removeAll()
-        isEditing = false
-    }
-    
-    private func deleteAllCategories() {
-        for category in categories {
-            // First, remove the category from all places that use it
-            let placesInCategory = places.filter { $0.category?.id == category.id }
-            for place in placesInCategory {
-                place.category = nil
-            }
-            // Then delete the category
-            modelContext.delete(category)
-        }
-        selectedCategoriesToDelete.removeAll()
-        isEditing = false
-    }
-    
     private func deleteCategories(at offsets: IndexSet) {
         for index in offsets {
             let category = categories[index]
-            // First, remove the category from all places that use it
             let placesInCategory = places.filter { $0.category?.id == category.id }
             for place in placesInCategory {
                 place.category = nil
             }
-            // Then delete the category
             modelContext.delete(category)
         }
     }
@@ -266,19 +198,20 @@ struct NewCategoryView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section("Category Name") {
-                    TextField("e.g., Italian, Coffee Shops, Parks", text: $categoryName)
+                Section("Details") {
+                    TextField("Category Name", text: $categoryName)
                 }
             }
             .navigationTitle("New Category")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark)
+            .accentColor(.black)
+            .navigationBarBackButtonHidden(false)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
+                        .foregroundColor(.black)
                 }
-                
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
                         let category = PlaceCategory(name: categoryName, type: type)
@@ -286,6 +219,7 @@ struct NewCategoryView: View {
                         dismiss()
                     }
                     .disabled(categoryName.isEmpty)
+                    .foregroundColor(.black)
                 }
             }
         }
@@ -298,7 +232,6 @@ struct PlacesListView: View {
     let type: String
     var wishlistOnly: Bool = false
     var favoritesOnly: Bool = false
-    var searchText: String = ""
     
     @Environment(\.modelContext) private var modelContext
     @Query private var allPlaces: [Place]
@@ -307,49 +240,35 @@ struct PlacesListView: View {
     @State private var selectedPlace: Place?
     
     private var places: [Place] {
-        // Use lazy filtering for better performance
         var filtered: [Place]
         
         if wishlistOnly {
-            filtered = allPlaces.lazy.filter { !$0.hasVisited && $0.category?.type == type }
+            filtered = allPlaces.filter { !$0.hasVisited && $0.category?.type == type }
         } else if favoritesOnly {
-            filtered = allPlaces.lazy.filter { $0.hasVisited && $0.overallRating >= 8 && $0.category?.type == type }
+            filtered = allPlaces.filter { $0.hasVisited && $0.overallRating >= 8 && $0.category?.type == type }
         } else if let category = category {
-            filtered = allPlaces.lazy.filter { $0.category?.id == category.id }
+            filtered = allPlaces.filter { $0.category?.id == category.id }
         } else {
             filtered = []
         }
         
-        if !searchText.isEmpty {
-            let searchLower = searchText.lowercased()
-            filtered = filtered.filter { place in
-                place.name.lowercased().contains(searchLower) ||
-                place.location.lowercased().contains(searchLower)
-            }
-        }
-        
-        // Sort only once at the end
         return filtered.sorted { first, second in
             if first.hasVisited != second.hasVisited {
-                return !first.hasVisited && second.hasVisited
+                return !first.hasVisited
             }
             return first.overallRating > second.overallRating
         }
     }
     
     private var title: String {
-        if wishlistOnly {
-            return "Wishlist"
-        } else if favoritesOnly {
-            return "Top Rated"
-        } else {
-            return category?.name ?? "Places"
-        }
+        if wishlistOnly { return "Wishlist" }
+        if favoritesOnly { return "Top Rated" }
+        return category?.name ?? "Places"
     }
     
     var body: some View {
         List {
-            ForEach(places, id: \.id) { place in
+            ForEach(places) { place in
                 Button {
                     selectedPlace = place
                 } label: {
@@ -361,24 +280,21 @@ struct PlacesListView: View {
                     modelContext.delete(places[index])
                 }
             }
-            
-            if places.isEmpty {
-                Text("No places yet")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
         }
+        .listStyle(InsetGroupedListStyle())
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemGroupedBackground))
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarColorScheme(.dark)
+        .accentColor(.black)
+        .navigationBarBackButtonHidden(false)
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    showingNewPlace = true
-                } label: {
-                    Image(systemName: "plus")
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                        .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
-                }
+            Button {
+                showingNewPlace = true
+            } label: {
+                Image(systemName: "plus")
+                    .foregroundColor(.black)
             }
         }
         .sheet(isPresented: $showingNewPlace) {
@@ -396,7 +312,6 @@ struct PlaceRowView: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            // Photo thumbnail
             if !place.photoData.isEmpty, let uiImage = UIImage(data: place.photoData) {
                 Image(uiImage: uiImage)
                     .resizable()
@@ -405,23 +320,19 @@ struct PlaceRowView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.gray.opacity(0.3))
+                    .fill(Color.gray.opacity(0.2))
                     .frame(width: 60, height: 60)
-                    .overlay(
-                        Image(systemName: "photo")
-                            .foregroundColor(.gray)
-                    )
+                    .overlay(Image(systemName: "photo").foregroundColor(.gray))
             }
             
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(place.name)
                         .font(.headline)
-                    
                     if !place.hasVisited {
                         Image(systemName: "star.fill")
                             .font(.caption)
-                            .foregroundColor(.yellow)
+                            .foregroundColor(.black)
                     }
                 }
                 
@@ -433,37 +344,16 @@ struct PlaceRowView: View {
                 }
                 
                 HStack(spacing: 8) {
-                    // Overall rating
                     if place.hasVisited {
-                        HStack(spacing: 2) {
-                            Image(systemName: "star.fill")
-                                .font(.caption)
-                                .foregroundColor(.orange)
-                            Text("\(place.overallRating)/10")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
+                        Label("\(place.overallRating)/10", systemImage: "star.fill")
+                            .font(.caption)
+                            .foregroundColor(.black)
                     }
                     
-                    // Price range
                     if !place.priceRange.isEmpty {
                         Text(place.priceRange)
                             .font(.caption)
-                            .foregroundColor(.green)
-                    }
-                    
-                    // Would return
-                    if place.hasVisited && place.wouldReturn {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                    }
-                    
-                    // Date visited
-                    if place.dateVisited != Date.distantPast {
-                            Text(place.dateVisited, style: .date)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.gray)
                     }
                 }
             }
@@ -483,195 +373,239 @@ struct PlaceDetailView: View {
     var body: some View {
         NavigationView {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    // Photo
+                VStack(spacing: 24) {
+                    // Photo Section
                     if !place.photoData.isEmpty, let uiImage = UIImage(data: place.photoData) {
                         Image(uiImage: uiImage)
                             .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 250)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .scaledToFill()
+                            .frame(height: 200)
+                            .clipped()
+                            .cornerRadius(16)
+                            .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: 4)
                     }
                     
-                    // Basic info
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(place.name)
-                            .font(.title)
-                            .fontWeight(.bold)
-                        
-                        if !place.location.isEmpty {
-                            HStack {
-                                Image(systemName: "mappin.circle.fill")
-                                    .foregroundColor(.red)
-                                Text(place.location)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        
-                        if !place.address.isEmpty {
-                            HStack {
-                                Image(systemName: "location.fill")
-                                    .foregroundColor(.blue)
-                                Text(place.address)
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        
-                        HStack(spacing: 16) {
-                            if !place.priceRange.isEmpty {
-                                Label(place.priceRange, systemImage: "dollarsign.circle.fill")
-                                    .foregroundColor(.green)
+                    // Basic Info Card
+                    VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(place.name)
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .foregroundColor(.primary)
+                            
+                            if !place.location.isEmpty {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "mappin.circle.fill")
+                                        .foregroundColor(.black)
+                                        .font(.subheadline)
+                                    Text(place.location)
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
                             }
                             
-                            if !place.cuisineType.isEmpty {
-                                Label(place.cuisineType, systemImage: "fork.knife")
-                                    .foregroundColor(.orange)
-                            }
-                        }
-                        .font(.subheadline)
-                    }
-                    .padding(.horizontal)
-                    
-                    Divider()
-                    
-                    // Status
-                    if place.hasVisited {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Image(systemName: place.wouldReturn ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                    .foregroundColor(place.wouldReturn ? .green : .red)
-                                Text(place.wouldReturn ? "Would Return" : "Would Not Return")
-                                    .font(.headline)
-                            }
-                            
-                            if place.dateVisited != Date.distantPast {
-                                HStack {
-                                    Image(systemName: "calendar")
-                                    Text("Visited: \(place.dateVisited, style: .date)")
+                            if !place.address.isEmpty {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "location")
+                                        .foregroundColor(.black)
+                                        .font(.subheadline)
+                                    Text(place.address)
+                                        .font(.subheadline)
                                         .foregroundColor(.secondary)
                                 }
                             }
                         }
-                        .padding(.horizontal)
-                    } else {
-                        HStack {
-                            Image(systemName: "star.fill")
-                                .foregroundColor(.yellow)
-                            Text("On Wishlist")
-                                .font(.headline)
-                        }
-                        .padding(.horizontal)
-                    }
-                    
-                    // Ratings (only if visited)
-                    if place.hasVisited {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Ratings")
-                                .font(.headline)
+                        
+                        // Quick Info Tags
+                        HStack(spacing: 12) {
+                            if !place.priceRange.isEmpty {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "dollarsign.circle.fill")
+                                        .foregroundColor(.black)
+                                        .font(.caption)
+                                    Text(place.priceRange)
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.gray.opacity(0.1))
+                                .cornerRadius(8)
+                            }
                             
-                            RatingRow(title: "Overall", rating: place.overallRating, color: .orange)
-                            RatingRow(title: "Price", rating: place.priceRating, color: .green)
-                            RatingRow(title: "Quality", rating: place.qualityRating, color: .blue)
-                            RatingRow(title: "Atmosphere", rating: place.atmosphereRating, color: .purple)
-                            RatingRow(title: "Fun Factor", rating: place.funFactorRating, color: .pink)
-                            RatingRow(title: "Scenery", rating: place.sceneryRating, color: .teal)
+                            if !place.cuisineType.isEmpty {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "fork.knife")
+                                        .foregroundColor(.black)
+                                        .font(.caption)
+                                    Text(place.cuisineType)
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.gray.opacity(0.1))
+                                .cornerRadius(8)
+                            }
                         }
-                        .padding(.horizontal)
-                        
-                        Divider()
+                    }
+                    .padding(16)
+                    .background(Color(.systemBackground))
+                    .cornerRadius(12)
+                    .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
+                    
+                    // Additional Details Card
+                    if !place.bestTimeToGo.isEmpty || !place.whoToBring.isEmpty || !place.entryFee.isEmpty || !place.dishRecommendations.isEmpty {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("Details")
+                                .font(.headline)
+                                .fontWeight(.semibold)
+                            
+                            VStack(spacing: 12) {
+                                if !place.bestTimeToGo.isEmpty {
+                                    DetailRow(icon: "clock", iconColor: .black, title: "Best Time", value: place.bestTimeToGo)
+                                }
+                                
+                                if !place.whoToBring.isEmpty {
+                                    DetailRow(icon: "person.2", iconColor: .black, title: "Who to Bring", value: place.whoToBring)
+                                }
+                                
+                                if !place.entryFee.isEmpty {
+                                    DetailRow(icon: "ticket", iconColor: .black, title: "Entry Fee", value: place.entryFee)
+                                }
+                                
+                                if !place.dishRecommendations.isEmpty {
+                                    DetailRow(icon: "star.circle", iconColor: .black, title: "Recommended", value: place.dishRecommendations)
+                                }
+                            }
+                        }
+                        .padding(16)
+                        .background(Color(.systemBackground))
+                        .cornerRadius(12)
+                        .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
                     }
                     
-                    // Additional details
-                    if !place.bestTimeToGo.isEmpty {
-                        DetailSection(icon: "clock.fill", title: "Best Time to Go", content: place.bestTimeToGo)
-                    }
-                    
-                    if !place.whoToBring.isEmpty {
-                        DetailSection(icon: "person.2.fill", title: "Who to Bring", content: place.whoToBring)
-                    }
-                    
-                    if !place.entryFee.isEmpty {
-                        DetailSection(icon: "ticket.fill", title: "Entry Fee", content: place.entryFee)
-                    }
-                    
-                    if !place.dishRecommendations.isEmpty {
-                        DetailSection(icon: "star.fill", title: "Dish Recommendations", content: place.dishRecommendations)
-                    }
-                    
-                    // Pros and Cons
+                    // Ratings Card
                     if place.hasVisited {
-                        if !place.pros.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Image(systemName: "hand.thumbsup.fill")
-                                        .foregroundColor(.green)
-                                    Text("Pros")
-                                        .font(.headline)
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("Your Experience")
+                                .font(.headline)
+                                .fontWeight(.semibold)
+                            
+                            VStack(spacing: 12) {
+                                RatingRow(title: "Overall", rating: place.overallRating, color: .black)
+                                RatingRow(title: "Price", rating: place.priceRating, color: .gray)
+                                RatingRow(title: "Quality", rating: place.qualityRating, color: .black)
+                                RatingRow(title: "Atmosphere", rating: place.atmosphereRating, color: .gray)
+                                
+                                // Show additional ratings for non-restaurant places
+                                if place.category?.type != "restaurants" {
+                                    RatingRow(title: "Fun Factor", rating: place.funFactorRating, color: .black)
+                                    RatingRow(title: "Scenery", rating: place.sceneryRating, color: .gray)
                                 }
-                                Text(place.pros)
-                                    .foregroundColor(.secondary)
                             }
-                            .padding(.horizontal)
-                        }
-                        
-                        if !place.cons.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
+                            
+                            Divider()
+                            
+                            VStack(spacing: 8) {
                                 HStack {
-                                    Image(systemName: "hand.thumbsdown.fill")
-                                        .foregroundColor(.red)
-                                    Text("Cons")
-                                        .font(.headline)
+                                    Image(systemName: "calendar")
+                                        .foregroundColor(.black)
+                                        .font(.subheadline)
+                                    Text("Visited: \(place.dateVisited, formatter: dateFormatter)")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
                                 }
-                                Text(place.cons)
-                                    .foregroundColor(.secondary)
+                                
+                                HStack {
+                                    Image(systemName: place.wouldReturn ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                        .foregroundColor(place.wouldReturn ? .black : .gray)
+                                        .font(.subheadline)
+                                    Text(place.wouldReturn ? "Would return" : "Would not return")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
                             }
-                            .padding(.horizontal)
                         }
+                        .padding(16)
+                        .background(Color(.systemBackground))
+                        .cornerRadius(12)
+                        .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
                     }
                     
-                    // Notes
+                    // Notes Card - Moved to bottom
                     if !place.notes.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "note.text")
-                                Text("Notes")
-                                    .font(.headline)
-                            }
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Notes")
+                                .font(.headline)
+                                .fontWeight(.semibold)
+                            
                             Text(place.notes)
+                                .font(.subheadline)
                                 .foregroundColor(.secondary)
+                                .lineLimit(nil)
                         }
-                        .padding(.horizontal)
+                        .padding(16)
+                        .background(Color(.systemBackground))
+                        .cornerRadius(12)
+                        .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
                     }
                 }
-                .padding(.vertical)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 20)
             }
             .navigationTitle("Details")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark)
+            .accentColor(.black)
+            .navigationBarBackButtonHidden(false)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") {
-                        dismiss()
-                    }
+                    Button("Close") { dismiss() }
+                        .foregroundColor(.black)
                 }
-                
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
+                    Button("Edit") {
                         showingEditSheet = true
-                    } label: {
-                        Text("Edit")
                     }
+                    .foregroundColor(.black)
                 }
             }
             .sheet(isPresented: $showingEditSheet) {
-                PlaceEditorView(
-                    category: place.category,
-                    place: place,
-                    type: place.category?.type ?? "restaurants"
-                )
+                PlaceEditorView(category: place.category, place: place, type: place.category?.type ?? "restaurants")
             }
         }
+    }
+}
+
+// MARK: - Detail Row
+struct DetailRow: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let value: String
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundColor(iconColor)
+                .font(.subheadline)
+                .frame(width: 20, alignment: .leading)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fontWeight(.medium)
+                
+                Text(value)
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+            }
+            
+            Spacer()
+        }
+        .padding(.vertical, 4)
     }
 }
 
@@ -685,6 +619,8 @@ struct RatingRow: View {
         HStack {
             Text(title)
                 .frame(width: 100, alignment: .leading)
+                .font(.subheadline)
+                .fontWeight(.medium)
             
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 4)
@@ -700,31 +636,12 @@ struct RatingRow: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .frame(width: 50, alignment: .trailing)
+                .fontWeight(.medium)
         }
     }
 }
 
-// MARK: - Detail Section
-struct DetailSection: View {
-    let icon: String
-    let title: String
-    let content: String
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: icon)
-                Text(title)
-                    .font(.headline)
-            }
-            Text(content)
-                .foregroundColor(.secondary)
-        }
-        .padding(.horizontal)
-    }
-}
-
-// MARK: - Place Editor View
+// MARK: - Place Editor View (DETAILED)
 struct PlaceEditorView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -742,22 +659,20 @@ struct PlaceEditorView: View {
     @State private var bestTimeToGo = ""
     @State private var whoToBring = ""
     @State private var entryFee = ""
-    @State private var dishRecommendations = ""
     @State private var notes = ""
+    @State private var dishRecommendations = ""
     @State private var hasVisited = false
-    @State private var dateVisited = Date()
     @State private var wouldReturn = true
-    @State private var priceRating: Double = 5
-    @State private var qualityRating: Double = 5
-    @State private var atmosphereRating: Double = 5
-    @State private var funFactorRating: Double = 5
-    @State private var sceneryRating: Double = 5
-    @State private var overallRating: Double = 5
-    @State private var pros = ""
-    @State private var cons = ""
+    @State private var ratingText = "5"
+    @State private var priceRatingText = "5"
+    @State private var qualityRatingText = "5"
+    @State private var atmosphereRatingText = "5"
+    @State private var funFactorRatingText = "5"
+    @State private var sceneryRatingText = "5"
     @State private var selectedImage: UIImage?
     @State private var showingImagePicker = false
     @State private var selectedCategory: PlaceCategory?
+    @State private var dateVisited = Date()
     
     private var categories: [PlaceCategory] {
         allCategories.filter { $0.type == type }
@@ -777,19 +692,17 @@ struct PlaceEditorView: View {
         _bestTimeToGo = State(initialValue: place?.bestTimeToGo ?? "")
         _whoToBring = State(initialValue: place?.whoToBring ?? "")
         _entryFee = State(initialValue: place?.entryFee ?? "")
-        _dishRecommendations = State(initialValue: place?.dishRecommendations ?? "")
         _notes = State(initialValue: place?.notes ?? "")
+        _dishRecommendations = State(initialValue: place?.dishRecommendations ?? "")
         _hasVisited = State(initialValue: place?.hasVisited ?? false)
-        _dateVisited = State(initialValue: place?.dateVisited ?? Date())
         _wouldReturn = State(initialValue: place?.wouldReturn ?? true)
-        _priceRating = State(initialValue: Double(place?.priceRating ?? 5))
-        _qualityRating = State(initialValue: Double(place?.qualityRating ?? 5))
-        _atmosphereRating = State(initialValue: Double(place?.atmosphereRating ?? 5))
-        _funFactorRating = State(initialValue: Double(place?.funFactorRating ?? 5))
-        _sceneryRating = State(initialValue: Double(place?.sceneryRating ?? 5))
-        _overallRating = State(initialValue: Double(place?.overallRating ?? 5))
-        _pros = State(initialValue: place?.pros ?? "")
-        _cons = State(initialValue: place?.cons ?? "")
+        _ratingText = State(initialValue: String(place?.overallRating ?? 5))
+        _priceRatingText = State(initialValue: String(place?.priceRating ?? 5))
+        _qualityRatingText = State(initialValue: String(place?.qualityRating ?? 5))
+        _atmosphereRatingText = State(initialValue: String(place?.atmosphereRating ?? 5))
+        _funFactorRatingText = State(initialValue: String(place?.funFactorRating ?? 5))
+        _sceneryRatingText = State(initialValue: String(place?.sceneryRating ?? 5))
+        _dateVisited = State(initialValue: place?.dateVisited ?? Date())
         
         if let photoData = place?.photoData {
             _selectedImage = State(initialValue: UIImage(data: photoData))
@@ -798,62 +711,15 @@ struct PlaceEditorView: View {
     
     var body: some View {
         NavigationView {
-            ScrollView {
-                VStack(spacing: DesignSystem.Spacing.lg) {
-                    // Basic Information Section
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-                        Text("Basic Information")
-                            .font(DesignSystem.Typography.title3)
-                            .fontWeight(.semibold)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                    
-                    VStack(spacing: DesignSystem.Spacing.md) {
-                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                            Text("Name")
-                                .font(DesignSystem.Typography.callout)
-                                .fontWeight(.medium)
-                                .foregroundColor(DesignSystem.Colors.textPrimary)
-                            
-                            ModernTaskTextField(
-                                text: $name,
-                                placeholder: "Enter place name",
-                                isFocused: .constant(false),
-                                isMultiline: false
-                            )
-                        }
-                        
-                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                            Text("Location/City")
-                                .font(DesignSystem.Typography.callout)
-                                .fontWeight(.medium)
-                                .foregroundColor(DesignSystem.Colors.textPrimary)
-                            
-                            ModernTaskTextField(
-                                text: $location,
-                                placeholder: "Enter city or location",
-                                isFocused: .constant(false),
-                                isMultiline: false
-                            )
-                        }
-                        
-                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                            Text("Address (optional)")
-                                .font(DesignSystem.Typography.callout)
-                                .fontWeight(.medium)
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
-                            
-                            ModernTaskTextField(
-                                text: $address,
-                                placeholder: "Enter full address",
-                                isFocused: .constant(false),
-                                isMultiline: false
-                            )
-                        }
-                    }
+            Form {
+                Section("Basic Info") {
+                    TextField("Name", text: $name)
+                    TextField("Location/City", text: $location)
+                    TextField("Address", text: $address)
                     
                     Picker("Category", selection: $selectedCategory) {
                         Text("Select Category").tag(nil as PlaceCategory?)
-                        ForEach(categories, id: \.id) { cat in
+                        ForEach(categories) { cat in
                             Text(cat.name).tag(cat as PlaceCategory?)
                         }
                     }
@@ -869,107 +735,36 @@ struct PlaceEditorView: View {
                     }
                     
                     if type == "restaurants" {
-                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                            Text("Cuisine Type")
-                                .font(DesignSystem.Typography.callout)
-                                .fontWeight(.medium)
-                                .foregroundColor(DesignSystem.Colors.textPrimary)
-                            
-                            ModernTaskTextField(
-                                text: $cuisineType,
-                                placeholder: "Enter cuisine type",
-                                isFocused: .constant(false),
-                                isMultiline: false
-                            )
-                        }
-                        
-                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                            Text("Dish Recommendations")
-                                .font(DesignSystem.Typography.callout)
-                                .fontWeight(.medium)
-                                .foregroundColor(DesignSystem.Colors.textPrimary)
-                            
-                            ModernTaskTextField(
-                                text: $dishRecommendations,
-                                placeholder: "Enter dish recommendations",
-                                isFocused: .constant(false),
-                                isMultiline: false
-                            )
-                        }
+                        TextField("Cuisine Type", text: $cuisineType)
+                        TextField("Dish Recommendations", text: $dishRecommendations)
                     }
                     
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                        Text("Best Time to Go")
-                            .font(DesignSystem.Typography.callout)
-                            .fontWeight(.medium)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                        
-                        ModernTaskTextField(
-                            text: $bestTimeToGo,
-                            placeholder: "Enter best time to visit",
-                            isFocused: .constant(false),
-                            isMultiline: false
-                        )
-                    }
+                    TextField("Best Time to Go", text: $bestTimeToGo)
+                    TextField("Who to Bring", text: $whoToBring)
                     
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                        Text("Who to Bring")
-                            .font(DesignSystem.Typography.callout)
-                            .fontWeight(.medium)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                        
-                        ModernTaskTextField(
-                            text: $whoToBring,
-                            placeholder: "Enter who to bring",
-                            isFocused: .constant(false),
-                            isMultiline: false
-                        )
-                    }
-                    
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                        Text("Entry Fee/Cost")
-                            .font(DesignSystem.Typography.callout)
-                            .fontWeight(.medium)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                        
-                        ModernTaskTextField(
-                            text: $entryFee,
-                            placeholder: "Enter cost or entry fee",
-                            isFocused: .constant(false),
-                            isMultiline: false
-                        )
+                    if type != "restaurants" {
+                        TextField("Entry Fee", text: $entryFee)
                     }
                 }
                 
-                // Photo Section
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-                    Text("Photo")
-                        .font(DesignSystem.Typography.title3)
-                        .fontWeight(.semibold)
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                    
+                Section("Photo") {
                     if let image = selectedImage {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFit()
                             .frame(maxHeight: 200)
-                            .cornerRadius(12)
+                            .cornerRadius(8)
                     }
                     
                     Button {
                         showingImagePicker = true
                     } label: {
                         Label(selectedImage == nil ? "Add Photo" : "Change Photo", systemImage: "photo")
+                            .foregroundColor(.black)
                     }
                 }
                 
-                // Visit Status Section
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-                    Text("Visit Status")
-                        .font(DesignSystem.Typography.title3)
-                        .fontWeight(.semibold)
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                    
+                Section("Visit Status") {
                     Toggle("I've Been Here", isOn: $hasVisited)
                     
                     if hasVisited {
@@ -979,87 +774,87 @@ struct PlaceEditorView: View {
                 }
                 
                 if hasVisited {
-                    // Ratings Section
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-                        Text("Ratings")
-                            .font(DesignSystem.Typography.title3)
-                            .fontWeight(.semibold)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
-                        
-                        VStack(spacing: 16) {
-                            RatingSlider(title: "Overall", rating: $overallRating, color: .orange)
-                            RatingSlider(title: "Price", rating: $priceRating, color: .green)
-                            RatingSlider(title: "Quality", rating: $qualityRating, color: .blue)
-                            RatingSlider(title: "Atmosphere", rating: $atmosphereRating, color: .purple)
-                            RatingSlider(title: "Fun Factor", rating: $funFactorRating, color: .pink)
-                            RatingSlider(title: "Scenery", rating: $sceneryRating, color: .teal)
+                    Section("Ratings (1-10)") {
+                        HStack {
+                            Text("Overall")
+                            Spacer()
+                            TextField("5", text: $ratingText)
+                                .keyboardType(.numberPad)
+                                .frame(width: 60)
+                                .multilineTextAlignment(.trailing)
                         }
-                    }
-                    
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                        Text("Pros")
-                            .font(DesignSystem.Typography.callout)
-                            .fontWeight(.medium)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
                         
-                        ModernTaskTextField(
-                            text: $pros,
-                            placeholder: "Enter the pros of this place...",
-                            isFocused: .constant(false),
-                            isMultiline: true
-                        )
-                        .frame(minHeight: 80)
-                    }
-                    
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                        Text("Cons")
-                            .font(DesignSystem.Typography.callout)
-                            .fontWeight(.medium)
-                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                        HStack {
+                            Text("Price")
+                            Spacer()
+                            TextField("5", text: $priceRatingText)
+                                .keyboardType(.numberPad)
+                                .frame(width: 60)
+                                .multilineTextAlignment(.trailing)
+                        }
                         
-                        ModernTaskTextField(
-                            text: $cons,
-                            placeholder: "Enter the cons of this place...",
-                            isFocused: .constant(false),
-                            isMultiline: true
-                        )
-                        .frame(minHeight: 80)
+                        HStack {
+                            Text("Quality")
+                            Spacer()
+                            TextField("5", text: $qualityRatingText)
+                                .keyboardType(.numberPad)
+                                .frame(width: 60)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        
+                        HStack {
+                            Text("Atmosphere")
+                            Spacer()
+                            TextField("5", text: $atmosphereRatingText)
+                                .keyboardType(.numberPad)
+                                .frame(width: 60)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        
+                        if type != "restaurants" {
+                            HStack {
+                                Text("Fun Factor")
+                                Spacer()
+                                TextField("5", text: $funFactorRatingText)
+                                    .keyboardType(.numberPad)
+                                    .frame(width: 60)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                            
+                            HStack {
+                                Text("Scenery")
+                                Spacer()
+                                TextField("5", text: $sceneryRatingText)
+                                    .keyboardType(.numberPad)
+                                    .frame(width: 60)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                        }
                     }
                 }
                 
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                    Text("Notes")
-                        .font(DesignSystem.Typography.callout)
-                        .fontWeight(.medium)
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                    
-                    ModernTaskTextField(
-                        text: $notes,
-                        placeholder: "Add any additional notes...",
-                        isFocused: .constant(false),
-                        isMultiline: true
-                    )
-                    .frame(minHeight: 100)
+                Section("Notes") {
+                    TextEditor(text: $notes)
+                        .frame(height: 100)
                 }
-                }
-                .padding(DesignSystem.Spacing.lg)
-                .background(DesignSystem.Colors.background)
             }
             .navigationTitle(place == nil ? "New Place" : "Edit Place")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark)
+            .accentColor(.black)
+            .navigationBarBackButtonHidden(false)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
+                        .foregroundColor(.black)
                 }
-                
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         savePlace()
                         dismiss()
                     }
                     .disabled(name.isEmpty || selectedCategory == nil)
+                    .foregroundColor(.black)
                 }
             }
             .sheet(isPresented: $showingImagePicker) {
@@ -1069,58 +864,60 @@ struct PlaceEditorView: View {
     }
     
     private func savePlace() {
-        let photoData = selectedImage?.jpegData(compressionQuality: 0.8)
+        let photoData = selectedImage?.jpegData(compressionQuality: 0.8) ?? Data()
+        let overallRating = Int16(ratingText) ?? 5
+        let priceRating = Int16(priceRatingText) ?? 5
+        let qualityRating = Int16(qualityRatingText) ?? 5
+        let atmosphereRating = Int16(atmosphereRatingText) ?? 5
+        let funFactorRating = Int16(funFactorRatingText) ?? 5
+        let sceneryRating = Int16(sceneryRatingText) ?? 5
         
         if let existingPlace = place {
-            // Update existing place
             existingPlace.name = name
-            existingPlace.location = location.isEmpty ? "" : location
-            existingPlace.address = address.isEmpty ? "" : address
-            existingPlace.priceRange = priceRange.isEmpty ? "" : priceRange
-            existingPlace.cuisineType = cuisineType.isEmpty ? "" : cuisineType
-            existingPlace.bestTimeToGo = bestTimeToGo.isEmpty ? "" : bestTimeToGo
-            existingPlace.whoToBring = whoToBring.isEmpty ? "" : whoToBring
-            existingPlace.entryFee = entryFee.isEmpty ? "" : entryFee
-            existingPlace.dishRecommendations = dishRecommendations.isEmpty ? "" : dishRecommendations
-            existingPlace.notes = notes.isEmpty ? "" : notes
+            existingPlace.location = location
+            existingPlace.address = address
+            existingPlace.priceRange = priceRange
+            existingPlace.cuisineType = cuisineType
+            existingPlace.bestTimeToGo = bestTimeToGo
+            existingPlace.whoToBring = whoToBring
+            existingPlace.entryFee = entryFee
+            existingPlace.notes = notes
+            existingPlace.dishRecommendations = dishRecommendations
             existingPlace.hasVisited = hasVisited
-            existingPlace.dateVisited = hasVisited ? dateVisited : Date.distantPast
             existingPlace.wouldReturn = wouldReturn
-            existingPlace.priceRating = Int16(priceRating)
-            existingPlace.qualityRating = Int16(qualityRating)
-            existingPlace.atmosphereRating = Int16(atmosphereRating)
-            existingPlace.funFactorRating = Int16(funFactorRating)
-            existingPlace.sceneryRating = Int16(sceneryRating)
-            existingPlace.overallRating = Int16(overallRating)
-            existingPlace.pros = pros.isEmpty ? "" : pros
-            existingPlace.cons = cons.isEmpty ? "" : cons
+            existingPlace.overallRating = overallRating
+            existingPlace.priceRating = priceRating
+            existingPlace.qualityRating = qualityRating
+            existingPlace.atmosphereRating = atmosphereRating
+            existingPlace.funFactorRating = funFactorRating
+            existingPlace.sceneryRating = sceneryRating
+            existingPlace.dateVisited = hasVisited ? dateVisited : Date.distantPast
             existingPlace.category = selectedCategory
-            existingPlace.photoData = photoData ?? Data()
+            existingPlace.photoData = photoData
         } else {
-            // Create new place
             let newPlace = Place(
                 name: name,
-                location: location.isEmpty ? nil : location,
-                address: address.isEmpty ? nil : address,
-                priceRange: priceRange.isEmpty ? nil : priceRange,
-                cuisineType: cuisineType.isEmpty ? nil : cuisineType,
-                bestTimeToGo: bestTimeToGo.isEmpty ? nil : bestTimeToGo,
-                whoToBring: whoToBring.isEmpty ? nil : whoToBring,
-                entryFee: entryFee.isEmpty ? nil : entryFee,
-                notes: notes.isEmpty ? nil : notes,
-                dishRecommendations: dishRecommendations.isEmpty ? nil : dishRecommendations,
+                location: location,
+                address: address,
+                priceRange: priceRange,
+                cuisineType: cuisineType,
+                bestTimeToGo: bestTimeToGo,
+                whoToBring: whoToBring,
+                entryFee: entryFee,
+                notes: notes,
+                dishRecommendations: dishRecommendations,
                 photoData: photoData,
-                dateVisited: hasVisited ? dateVisited : nil,
+                dateVisited: hasVisited ? dateVisited : Date.distantPast,
                 wouldReturn: wouldReturn,
                 hasVisited: hasVisited,
-                priceRating: Int16(priceRating),
-                qualityRating: Int16(qualityRating),
-                atmosphereRating: Int16(atmosphereRating),
-                funFactorRating: Int16(funFactorRating),
-                sceneryRating: Int16(sceneryRating),
-                overallRating: Int16(overallRating),
-                pros: pros.isEmpty ? nil : pros,
-                cons: cons.isEmpty ? nil : cons,
+                priceRating: priceRating,
+                qualityRating: qualityRating,
+                atmosphereRating: atmosphereRating,
+                funFactorRating: funFactorRating,
+                sceneryRating: sceneryRating,
+                overallRating: overallRating,
+                pros: "",
+                cons: "",
                 category: selectedCategory
             )
             modelContext.insert(newPlace)
@@ -1128,34 +925,40 @@ struct PlaceEditorView: View {
     }
 }
 
-// MARK: - Rating Slider
-struct RatingSlider: View {
-    let title: String
-    @Binding var rating: Double
-    let color: Color
+
+// MARK: - Image Picker
+struct ImagePicker: UIViewControllerRepresentable {
+    @Binding var image: UIImage?
+    @Environment(\.dismiss) var dismiss
     
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text("\(Int(rating))/10")
-                    .foregroundColor(.secondary)
-            }
-            .font(.subheadline)
-            
-            Slider(value: $rating, in: 1...10, step: 1)
-                .tint(color)
-        }
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator
+        return picker
     }
-}
-
-
-
-// MARK: - Preview
-struct PlacesMainView_Previews: PreviewProvider {
-    static var previews: some View {
-        PlacesMainView()
-            .modelContainer(for: [PlaceCategory.self, Place.self])
+    
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: ImagePicker
+        
+        init(_ parent: ImagePicker) {
+            self.parent = parent
+        }
+        
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.image = image
+            }
+            parent.dismiss()
+        }
+        
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
     }
 }

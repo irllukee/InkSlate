@@ -38,10 +38,6 @@ struct ContentView: View {
                     selectedView: $selectedView
                 )
             )
-            .overlay(
-                CloudKitSyncIndicator()
-                    .environmentObject(sharedStateManager)
-            )
             .opacity(sharedStateManager.showSplashScreen ? 0 : 1)
             .animation(.easeInOut(duration: 0.3), value: sharedStateManager.showSplashScreen)
             
@@ -109,49 +105,6 @@ struct MenuOverlay: View {
     }
 }
 
-// MARK: - CloudKit Sync Indicator
-struct CloudKitSyncIndicator: View {
-    @EnvironmentObject private var sharedStateManager: SharedStateManager
-    
-    var body: some View {
-        VStack {
-            if sharedStateManager.cloudKitSyncStatus.isActive {
-                HStack(spacing: 8) {
-                    if sharedStateManager.cloudKitSyncStatus == .syncing {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                    } else {
-                        Image(systemName: "icloud.fill")
-                            .foregroundColor(.white)
-                    }
-                    
-                    Text(sharedStateManager.cloudKitSyncStatus.message)
-                        .font(.caption)
-                        .foregroundColor(.white)
-                    
-                    if sharedStateManager.cloudKitSyncStatus == .syncing && sharedStateManager.syncProgress > 0 {
-                        Text("\(Int(sharedStateManager.syncProgress * 100))%")
-                            .font(.caption2)
-                            .foregroundColor(.white.opacity(0.8))
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(
-                    Capsule()
-                        .fill(Color.blue)
-                        .shadow(radius: 4)
-                )
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-            
-            Spacer()
-        }
-        .padding(.top, 60) // Account for safe area
-        .animation(.easeInOut(duration: 0.3), value: sharedStateManager.cloudKitSyncStatus.isActive)
-    }
-}
 
 #Preview {
     ContentView()

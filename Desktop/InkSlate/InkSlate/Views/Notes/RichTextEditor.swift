@@ -281,11 +281,12 @@ struct EnhancedToolbar: View {
         var currentPosition = 0
         
         for (index, line) in lines.enumerated() {
-            if currentPosition + line.count >= cursorPosition {
+            let lineEndPosition = currentPosition + line.count
+            if lineEndPosition >= cursorPosition {
                 currentLineIndex = index
                 break
             }
-            currentPosition += line.count + 1 // +1 for newline character
+            currentPosition = lineEndPosition + 1 // +1 for newline character
         }
         
         if currentLineIndex < lines.count {
@@ -296,11 +297,49 @@ struct EnhancedToolbar: View {
     }
     
     private var canIndent: Bool {
-        return isBulletList || selectedRange.length > 0
+        let text = attributedText.string
+        let cursorPosition = selectedRange.location
+        let lines = text.components(separatedBy: .newlines)
+        var currentPosition = 0
+        var currentLineIndex = 0
+        
+        for (index, line) in lines.enumerated() {
+            let lineEndPosition = currentPosition + line.count
+            if lineEndPosition >= cursorPosition {
+                currentLineIndex = index
+                break
+            }
+            currentPosition = lineEndPosition + 1
+        }
+        
+        if currentLineIndex < lines.count {
+            let currentLine = lines[currentLineIndex]
+            return !currentLine.isEmpty && (currentLine.hasPrefix("• ") || currentLine.hasPrefix("◦ ") || currentLine.hasPrefix("▪ ") || !currentLine.hasPrefix("    "))
+        }
+        return false
     }
     
     private var canOutdent: Bool {
-        return isBulletList
+        let text = attributedText.string
+        let cursorPosition = selectedRange.location
+        let lines = text.components(separatedBy: .newlines)
+        var currentPosition = 0
+        var currentLineIndex = 0
+        
+        for (index, line) in lines.enumerated() {
+            let lineEndPosition = currentPosition + line.count
+            if lineEndPosition >= cursorPosition {
+                currentLineIndex = index
+                break
+            }
+            currentPosition = lineEndPosition + 1
+        }
+        
+        if currentLineIndex < lines.count {
+            let currentLine = lines[currentLineIndex]
+            return currentLine.hasPrefix("• ") || currentLine.hasPrefix("◦ ") || currentLine.hasPrefix("▪ ") || currentLine.hasPrefix("    ") || currentLine.hasPrefix("  ")
+        }
+        return false
     }
     
     // MARK: - Actions
@@ -407,6 +446,8 @@ struct EnhancedToolbar: View {
                     newLines.append("◦ \(String(line.dropFirst(2)))")
                 } else if line.hasPrefix("◦ ") {
                     newLines.append("▪ \(String(line.dropFirst(2)))")
+                } else if line.hasPrefix("▪ ") {
+                    newLines.append("    \(line)") // Convert to regular indentation
                 } else if !line.isEmpty {
                     newLines.append("    \(line)") // 4 spaces for regular indentation
                 } else {
@@ -437,6 +478,8 @@ struct EnhancedToolbar: View {
                     newLines.append(String(line.dropFirst(2)))
                 } else if line.hasPrefix("    ") {
                     newLines.append(String(line.dropFirst(4)))
+                } else if line.hasPrefix("  ") {
+                    newLines.append(String(line.dropFirst(2)))
                 } else {
                     newLines.append(line)
                 }
@@ -456,10 +499,11 @@ struct EnhancedToolbar: View {
         var currentPosition = 0
         
         for (index, line) in lines.enumerated() {
-            if currentPosition + line.count >= cursorPosition {
+            let lineEndPosition = currentPosition + line.count
+            if lineEndPosition >= cursorPosition {
                 return index
             }
-            currentPosition += line.count + 1 // +1 for newline character
+            currentPosition = lineEndPosition + 1 // +1 for newline character
         }
         
         return lines.count - 1
@@ -658,11 +702,12 @@ struct RichTextViewRepresentable: UIViewRepresentable {
             var currentLineIndex = 0
             
             for (index, line) in lines.enumerated() {
-                if currentPosition + line.count >= cursorPosition {
+                let lineEndPosition = currentPosition + line.count
+                if lineEndPosition >= cursorPosition {
                     currentLineIndex = index
                     break
                 }
-                currentPosition += line.count + 1 // +1 for newline character
+                currentPosition = lineEndPosition + 1 // +1 for newline character
             }
             
             if currentLineIndex < lines.count {

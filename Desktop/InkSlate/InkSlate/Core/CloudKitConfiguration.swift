@@ -114,44 +114,7 @@ class CloudKitService {
     }
 }
 
-// MARK: - NSAttributedString Value Transformer for CloudKit
-class NSAttributedStringTransformer: ValueTransformer {
-    override class func transformedValueClass() -> AnyClass { NSData.self }
-    override class func allowsReverseTransformation() -> Bool { true }
-
-    override func transformedValue(_ value: Any?) -> Any? {
-        guard let attributedString = value as? NSAttributedString else { return nil }
-        do {
-            let data = try attributedString.data(
-                from: NSRange(location: 0, length: attributedString.length),
-                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
-            )
-            
-            // CloudKit limit check (1 MB = 1,048,576 bytes)
-            if data.count > 1_000_000 {
-                // Fallback to plain text
-                return attributedString.string.data(using: .utf8)
-            }
-            
-            return data
-        } catch {
-            return nil
-        }
-    }
-
-    override func reverseTransformedValue(_ value: Any?) -> Any? {
-        guard let data = value as? Data else { return nil }
-        do {
-            return try NSAttributedString(
-                data: data,
-                options: [.documentType: NSAttributedString.DocumentType.rtf],
-                documentAttributes: nil
-            )
-        } catch {
-            return NSAttributedString(string: "")
-        }
-    }
-}
+// MARK: - No longer need NSAttributedStringTransformer since we store Data directly
 
 // MARK: - Shared CloudKit-backed ModelContainer
 @MainActor

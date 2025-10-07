@@ -104,11 +104,19 @@ extension ModelContext {
     func saveWithDebounce(using autoSaveManager: AutoSaveManager) {
         autoSaveManager.setModelContext(self)
         autoSaveManager.scheduleSave()
-        try? self.save()
+        do {
+            try self.save()
+        } catch {
+            print("Error saving with debounce: \(error)")
+        }
     }
     
     func forceSave() {
-        try? self.save()
+        do {
+            try self.save()
+        } catch {
+            print("Error force saving: \(error)")
+        }
     }
 }
 

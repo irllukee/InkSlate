@@ -55,6 +55,55 @@ class TMDBService: ObservableObject {
         return try JSONDecoder().decode(TMDBResponse.self, from: data)
     }
     
+    // MARK: - Popular Content Methods
+    func getPopularMovies(page: Int = 1) async throws -> TMDBResponse {
+        let url = URL(string: "\(baseURL)/movie/popular")!
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "page", value: String(page))
+        ]
+        
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        return try JSONDecoder().decode(TMDBResponse.self, from: data)
+    }
+    
+    func getPopularTVShows(page: Int = 1) async throws -> TMDBResponse {
+        let url = URL(string: "\(baseURL)/tv/popular")!
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "page", value: String(page))
+        ]
+        
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        return try JSONDecoder().decode(TMDBResponse.self, from: data)
+    }
+    
+    func getTopRatedMovies(page: Int = 1) async throws -> TMDBResponse {
+        let url = URL(string: "\(baseURL)/movie/top_rated")!
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "page", value: String(page))
+        ]
+        
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        return try JSONDecoder().decode(TMDBResponse.self, from: data)
+    }
+    
+    func getTopRatedTVShows(page: Int = 1) async throws -> TMDBResponse {
+        let url = URL(string: "\(baseURL)/tv/top_rated")!
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "page", value: String(page))
+        ]
+        
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        return try JSONDecoder().decode(TMDBResponse.self, from: data)
+    }
+    
     
     // MARK: - Genre Lists
     func getMovieGenres() async throws -> TMDBGenresResponse {

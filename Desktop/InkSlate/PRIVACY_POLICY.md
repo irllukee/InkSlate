@@ -1,6 +1,6 @@
 # InkSlate Privacy Policy
 
-**Last Updated: October 2, 2024**
+**Last Updated: October 7, 2024**
 
 ## Introduction
 
@@ -10,8 +10,9 @@ InkSlate ("we," "our," or "us") is committed to protecting your privacy. This Pr
 
 ### Information You Provide Directly
 - **Account Information**: When you sign in with Apple, we receive your name and email address (if you choose to share them)
-- **App Content**: Notes, tasks, places, and other data you create within the app
+- **App Content**: Notes, journal entries, places, recipes, quotes, watchlist items, mind maps, search queries, and other data you create within the app
 - **Profile Information**: Profile pictures and contact information (if you grant access)
+- **Photos**: Images you choose to add to your notes, places, or journal entries
 
 ### Information We Collect Automatically
 - **Usage Data**: How you interact with the app to improve functionality
@@ -23,6 +24,7 @@ InkSlate ("we," "our," or "us") is committed to protecting your privacy. This Pr
 - **Browsing History**: We do not monitor your internet activity
 - **Personal Identifiers**: We do not collect your phone number or other personal identifiers
 - **Third-Party Data**: We do not collect data from other apps or services
+- **TMDB Data**: We do not store data from The Movie Database beyond what you explicitly save
 
 ## How We Use Your Information
 
@@ -117,7 +119,7 @@ InkSlate is not intended for children under 13. We do not knowingly collect pers
 - **Continued Use**: Continued use constitutes acceptance of changes
 
 ### Version History
-- **Current Version**: October 2, 2024
+- **Current Version**: October 7, 2024
 - **Previous Versions**: Available in app update notes
 
 ## Contact Us
@@ -136,7 +138,7 @@ For privacy-specific concerns, please use the contact methods above with "Privac
 This Privacy Policy is governed by the laws of [Your Jurisdiction].
 
 ### Effective Date
-This Privacy Policy is effective as of October 2, 2024.
+This Privacy Policy is effective as of October 7, 2024.
 
 ### Severability
 If any provision of this Privacy Policy is found to be unenforceable, the remaining provisions will remain in effect.

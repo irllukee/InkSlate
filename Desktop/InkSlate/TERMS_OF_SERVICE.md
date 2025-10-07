@@ -1,6 +1,6 @@
 # InkSlate Terms of Service
 
-**Last Updated: October 2, 2024**
+**Last Updated: October 7, 2024**
 
 ## Agreement to Terms
 
@@ -9,12 +9,15 @@ By downloading, installing, or using InkSlate ("the App"), you agree to be bound
 ## Description of Service
 
 InkSlate is a personal productivity application that allows users to:
-- Create and organize notes
+- Create and organize notes with rich text formatting, folders, and search
 - Manage tasks and to-do lists
-- Track places and reviews
+- Track places and reviews with comprehensive ratings, food types, and timing
 - Store recipes and ingredients
-- Maintain journals and quotes
-- Sync data across Apple devices (optional)
+- Maintain journals with writing prompts, streak tracking, and categorized prompts
+- Collect and organize quotes
+- Manage entertainment watchlists with TMDB integration, live search, and favorites
+- Create mind maps for visual thinking
+- Sync data across Apple devices via CloudKit (optional)
 
 ## User Responsibilities
 

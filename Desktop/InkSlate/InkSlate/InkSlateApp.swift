@@ -13,11 +13,7 @@ import Foundation
 struct InkSlateApp: App {
     
     init() {
-        // Register the NSAttributedString value transformer
-        ValueTransformer.setValueTransformer(
-            NSAttributedStringTransformer(),
-            forName: NSValueTransformerName("NSAttributedStringTransformer")
-        )
+        // No longer need NSAttributedStringTransformer since we store Data directly
     }
     
     var body: some Scene {

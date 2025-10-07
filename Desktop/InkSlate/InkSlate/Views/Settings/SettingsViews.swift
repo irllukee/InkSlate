@@ -57,6 +57,7 @@ struct SettingsView: View {
                 .foregroundColor(.primary)
             }
             
+            
             Section("Danger Zone") {
                 Button(action: {
                     showingFactoryResetWarning = true
