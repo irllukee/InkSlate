@@ -163,15 +163,89 @@ struct MindMapDetailView: View {
             return CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
         }
         
-        if let index = currentNode.children?.firstIndex(where: { $0.id == node.id }) {
-            let angle = Double(index) * (2 * .pi / Double(currentNode.children?.count ?? 0))
-            let radius: CGFloat = 120
-            let x = geometry.size.width / 2 + cos(angle) * radius
-            let y = geometry.size.height / 2 + sin(angle) * radius
-            return CGPoint(x: x, y: y)
+        if let children = currentNode.children,
+           let index = children.firstIndex(where: { $0.id == node.id }) {
+            let position = calculateOrbitalPosition(
+                index: index,
+                totalNodes: children.count,
+                centerX: geometry.size.width / 2,
+                centerY: geometry.size.height / 2
+            )
+            return position
         }
         
         return CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+    }
+    
+    private func calculateOrbitalPosition(index: Int, totalNodes: Int, centerX: CGFloat, centerY: CGFloat) -> CGPoint {
+        // Define orbital rings with different radii
+        let orbitalRings: [CGFloat] = [120, 210, 300]
+        
+        // Dynamically distribute nodes across rings based on total count
+        let (ring, nodeIndexInRing, nodesInThisRing) = distributeNodesAcrossRings(
+            index: index,
+            totalNodes: totalNodes,
+            ringCount: orbitalRings.count
+        )
+        
+        // Ensure ring is within bounds
+        let safeRing = min(ring, orbitalRings.count - 1)
+        let radius = orbitalRings[safeRing]
+        
+        // Calculate angle for this node
+        let startAngle = -Double.pi / 2  // Start at top
+        let angleStep = 2 * Double.pi / Double(max(nodesInThisRing, 1))
+        let angle = startAngle + Double(nodeIndexInRing) * angleStep
+        
+        let x = centerX + cos(angle) * radius
+        let y = centerY + sin(angle) * radius
+        
+        return CGPoint(x: x, y: y)
+    }
+    
+    private func distributeNodesAcrossRings(index: Int, totalNodes: Int, ringCount: Int) -> (ring: Int, indexInRing: Int, nodesInRing: Int) {
+        // Ring capacities (ideal max nodes per ring)
+        let ringCapacities = [6, 10, 14]
+        
+        // For small numbers of nodes, keep them all on the innermost ring
+        if totalNodes <= ringCapacities[0] {
+            return (0, index, totalNodes)
+        }
+        
+        // Calculate which ring this node belongs to based on filling rings sequentially
+        var nodesAccountedFor = 0
+        var currentRing = 0
+        
+        // Fill rings in order until we find where this node belongs
+        for (ringIndex, capacity) in ringCapacities.enumerated() {
+            let nodesInThisRing: Int
+            
+            if totalNodes <= nodesAccountedFor + capacity {
+                // This ring is partially filled or is the last ring needed
+                nodesInThisRing = totalNodes - nodesAccountedFor
+            } else {
+                // This ring is completely filled
+                nodesInThisRing = capacity
+            }
+            
+            // Check if the current node index falls within this ring
+            if index < nodesAccountedFor + nodesInThisRing {
+                currentRing = ringIndex
+                let indexInRing = index - nodesAccountedFor
+                return (currentRing, indexInRing, nodesInThisRing)
+            }
+            
+            nodesAccountedFor += capacity
+            
+            // Stop if we've accounted for all nodes
+            if nodesAccountedFor >= totalNodes {
+                break
+            }
+        }
+        
+        // Fallback: place on the outermost ring if something went wrong
+        let lastRing = min(2, ringCount - 1)
+        return (lastRing, index - 16, max(1, totalNodes - 16))
     }
     
     private func navigateToNode(_ node: MindMapNode) {
@@ -218,11 +292,30 @@ struct MindMapDetailView: View {
         GeometryReader { geometry in
             ZStack {
                 backgroundView
+                orbitalRingsView(geometry: geometry)
                 centerNodeView(geometry: geometry)
                 childNodesView(geometry: geometry)
+                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentNode.children?.count ?? 0)
                 actionBubblesView(geometry: geometry)
                 addButtonView
             }
+            .scaleEffect(calculateZoomScale())
+            .animation(.easeInOut(duration: 0.3), value: currentNode.children?.count ?? 0)
+        }
+    }
+    
+    private func calculateZoomScale() -> CGFloat {
+        let childCount = currentNode.children?.count ?? 0
+        
+        if childCount <= 6 {
+            // Only ring 1 visible
+            return 1.0
+        } else if childCount <= 16 {
+            // Rings 1 & 2 visible
+            return 0.75
+        } else {
+            // All 3 rings visible
+            return 0.55
         }
     }
     
@@ -232,6 +325,37 @@ struct MindMapDetailView: View {
             .onTapGesture {
                 selectedNodeForAction = nil
             }
+    }
+    
+    private func orbitalRingsView(geometry: GeometryProxy) -> some View {
+        let centerX = geometry.size.width / 2
+        let centerY = geometry.size.height / 2
+        let orbitalRings: [CGFloat] = [120, 210, 300]
+        
+        // Only show rings that have nodes
+        let childCount = currentNode.children?.count ?? 0
+        let ringCapacities = [6, 10, 14]
+        var visibleRings: [Int] = []
+        var nodeCount = 0
+        
+        for (index, capacity) in ringCapacities.enumerated() {
+            if childCount > nodeCount {
+                visibleRings.append(index)
+                nodeCount += capacity
+            }
+        }
+        
+        return ZStack {
+            ForEach(visibleRings, id: \.self) { index in
+                Circle()
+                    .stroke(
+                        Color.blue.opacity(0.3),
+                        style: StrokeStyle(lineWidth: 2, dash: [8, 4])
+                    )
+                    .frame(width: orbitalRings[index] * 2, height: orbitalRings[index] * 2)
+                    .position(x: centerX, y: centerY)
+            }
+        }
     }
     
     private func centerNodeView(geometry: GeometryProxy) -> some View {
@@ -248,11 +372,12 @@ struct MindMapDetailView: View {
     
     private func childNodesView(geometry: GeometryProxy) -> some View {
         ForEach(Array((currentNode.children ?? []).enumerated()), id: \.element.id) { index, child in
-            let childrenCount = currentNode.children?.count ?? 0
-            let angle = Double(index) * (2 * .pi / Double(childrenCount))
-            let radius: CGFloat = 120
-            let x = geometry.size.width / 2 + cos(angle) * radius
-            let y = geometry.size.height / 2 + sin(angle) * radius
+            let position = calculateOrbitalPosition(
+                index: index,
+                totalNodes: currentNode.children?.count ?? 0,
+                centerX: geometry.size.width / 2,
+                centerY: geometry.size.height / 2
+            )
             
             NodeBubbleView(
                 node: child,
@@ -264,7 +389,7 @@ struct MindMapDetailView: View {
                     selectedNodeForAction = child
                 }
             )
-            .position(x: x, y: y)
+            .position(x: position.x, y: position.y)
         }
     }
     
@@ -322,7 +447,7 @@ struct MindMapDetailView: View {
     }
     
     private func addNewNode() {
-        guard (currentNode.children?.count ?? 0) < 10 else { return }
+        guard (currentNode.children?.count ?? 0) < 30 else { return }
         let newNode = MindMapNode(title: "New Topic", parent: currentNode)
         currentNode.addChild(newNode)
         try? modelContext.save()
@@ -340,16 +465,15 @@ struct NodeBubbleView: View {
     let onTap: () -> Void
     let onLongPress: () -> Void
     
-    // Fixed bubble size for all nodes
+    // Dynamic bubble sizes based on position
     private var bubbleSize: CGFloat {
-        return 60 // Fixed size for all bubbles
+        return isCenter ? 80 : 60
     }
     
     private var fontSize: CGFloat {
         let titleLength = node.title.count
-        let baseFontSize: CGFloat = 16
+        let baseFontSize: CGFloat = isCenter ? 18 : 16
         
-        // Reduce font size for longer text to fit in fixed bubble
         if titleLength > 8 {
             return max(8, baseFontSize - CGFloat(titleLength - 8) * 0.4)
         }
@@ -358,17 +482,42 @@ struct NodeBubbleView: View {
     
     var body: some View {
         Text(node.title)
-            .font(.system(size: fontSize, weight: .medium))
+            .font(.system(size: fontSize, weight: isCenter ? .semibold : .medium))
             .foregroundColor(.white)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(width: bubbleSize, height: bubbleSize)
-            .background(Color.black)
-            .clipShape(Circle())
+            .background(
+                ZStack {
+                    Circle()
+                        .fill(Color.black)
+                    
+                    if isCenter {
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    colors: [Color.white.opacity(0.2), Color.clear],
+                                    center: .center,
+                                    startRadius: 0,
+                                    endRadius: bubbleSize / 2
+                                )
+                            )
+                    }
+                }
+            )
             .overlay(
                 Circle()
-                    .stroke(Color.gray, lineWidth: isCenter ? 2 : 1)
+                    .stroke(
+                        isCenter ? Color.blue.opacity(0.6) : Color.gray.opacity(0.5),
+                        lineWidth: isCenter ? 2 : 1
+                    )
+            )
+            .shadow(
+                color: isCenter ? Color.blue.opacity(0.3) : Color.black.opacity(0.2),
+                radius: isCenter ? 8 : 4,
+                x: 0,
+                y: 2
             )
             .onTapGesture {
                 onTap()
@@ -416,7 +565,6 @@ struct EditNodeView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: DesignSystem.Spacing.xl) {
-                // Title section
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                     Text("Node Title")
                         .font(DesignSystem.Typography.callout)
@@ -431,7 +579,6 @@ struct EditNodeView: View {
                     )
                 }
                 
-                // Notes section
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                     Text("Notes")
                         .font(DesignSystem.Typography.callout)
@@ -475,8 +622,6 @@ struct EditNodeView: View {
     }
 }
 
-
-// MARK: - View Node View
 struct ViewNodeView: View {
     var node: MindMapNode
     @Environment(\.dismiss) private var dismiss
@@ -484,7 +629,6 @@ struct ViewNodeView: View {
     var body: some View {
         NavigationView {
             VStack(alignment: .leading, spacing: 20) {
-                // Title Section
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Title")
                         .font(.headline)
@@ -499,7 +643,6 @@ struct ViewNodeView: View {
                         .cornerRadius(8)
                 }
                 
-                // Notes Section
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Notes")
                         .font(.headline)
@@ -533,7 +676,6 @@ struct ViewNodeView: View {
     }
 }
 
-// MARK: - Breadcrumb Navigation View
 struct BreadcrumbNavigationView: View {
     let mindMap: MindMap
     let navigationStack: [MindMapNode]
@@ -543,17 +685,14 @@ struct BreadcrumbNavigationView: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                // Root node (mind map name)
                 BreadcrumbItemView(
                     title: mindMap.name,
                     isActive: currentNode.id == mindMap.rootNode?.id,
                     isLast: false
                 ) {
-                    // Navigate to root of this mind map
                     onNavigateToNode(-1)
                 }
                 
-                // Navigation stack nodes (only from current mind map)
                 ForEach(Array(navigationStack.enumerated()), id: \.offset) { index, node in
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.right")
@@ -571,7 +710,6 @@ struct BreadcrumbNavigationView: View {
                     }
                 }
                 
-                // Current node (only if not at root)
                 if currentNode.id != mindMap.rootNode?.id {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.right")
@@ -584,7 +722,6 @@ struct BreadcrumbNavigationView: View {
                             isActive: true,
                             isLast: true
                         ) {
-                            // Current node is not clickable
                         }
                     }
                 }

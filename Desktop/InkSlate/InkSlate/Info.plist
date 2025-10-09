@@ -8,5 +8,7 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCalendarsUsageDescription</key>
+	<string>InkSlate needs access to your calendar to display and manage your events.</string>
 </dict>
 </plist>

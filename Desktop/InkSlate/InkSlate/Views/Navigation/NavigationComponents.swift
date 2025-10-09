@@ -15,10 +15,12 @@ enum MenuViewType: String, CaseIterable {
     case mindMaps = "Mind Maps"
     case journal = "Journal"
     case todo = "To-Do"
+    case budget = "Budget"
     case places = "Places"
     case watchlist = "Watchlist"
     case quotes = "Quotes"
     case recipes = "Recipes"
+    case calendar = "Calendar"
     case settings = "Settings"
     case profile = "Profile"
     
@@ -29,10 +31,12 @@ enum MenuViewType: String, CaseIterable {
         case .mindMaps: return "brain.head.profile"
         case .journal: return "book.closed"
         case .todo: return "checklist"
+        case .budget: return "chart.pie.fill"
         case .places: return "mappin.and.ellipse"
         case .watchlist: return "tv"
         case .quotes: return "quote.bubble"
         case .recipes: return "fork.knife"
+        case .calendar: return "calendar"
         case .settings: return "gear"
         case .profile: return "person.fill"
         }
@@ -62,6 +66,7 @@ struct HamburgerMenuButton: View {
                 }
             }
             .frame(width: 20, height: 18)
+            .padding(.trailing, -8)
         }
         .scaleEffect(isHovering ? 1.1 : 1.0)
         .opacity(isHovering ? 0.7 : 1.0)

@@ -318,10 +318,12 @@ struct ModernRecipeCard: View {
     @State private var isHovered = false
     @State private var showingEditSheet = false
     @State private var showingImagePicker = false
+    @State private var showingDetail = false
     @State private var selectedImage: UIImage?
     
     var body: some View {
-        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+        Button(action: { showingDetail = true }) {
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
             // Recipe Image
             ZStack {
                 if let image = recipe.image {
@@ -385,6 +387,8 @@ struct ModernRecipeCard: View {
                                 .font(.system(size: 16))
                                 .foregroundColor(DesignSystem.Colors.textSecondary)
                         }
+                        .buttonStyle(PlainButtonStyle())
+                        .onTapGesture { }
                     }
                 }
                 
@@ -440,6 +444,8 @@ struct ModernRecipeCard: View {
                         .stroke(DesignSystem.Colors.border, lineWidth: 1)
                 )
         )
+        }
+        .buttonStyle(PlainButtonStyle())
         .scaleEffect(isHovered ? 1.02 : 1.0)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -451,6 +457,11 @@ struct ModernRecipeCard: View {
         }
         .sheet(isPresented: $showingImagePicker) {
             RecipeImagePicker(selectedImage: $selectedImage, recipe: recipe)
+        }
+        .sheet(isPresented: $showingDetail) {
+            NavigationView {
+                ModernRecipeDetailView(recipe: recipe)
+            }
         }
     }
 }
@@ -795,13 +806,16 @@ struct ModernAddRecipeView: View {
             newRecipe.cookingTime = cookingTime.trimmingCharacters(in: .whitespacesAndNewlines)
             newRecipe.difficulty = difficulty.rawValue
             
-            // Add ingredients to recipe
+            // Insert recipe first
+            modelContext.insert(newRecipe)
+            
+            // Add ingredients to recipe - INSERT EACH INGREDIENT
             for ingredient in ingredients {
                 ingredient.recipe = newRecipe
+                modelContext.insert(ingredient)
                 newRecipe.ingredients?.append(ingredient)
             }
             
-            modelContext.insert(newRecipe)
             modelContext.saveWithDebounce(using: autoSaveManager)
             loadingManager.stopLoading()
             dismiss()
@@ -1679,7 +1693,12 @@ struct ModernRecipeDetailView: View {
 
 // MARK: - Modern Ingredient Row
 struct ModernIngredientRow: View {
+    @Environment(\.modelContext) private var modelContext
+    @StateObject private var autoSaveManager = AutoSaveManager()
+    @StateObject private var loadingManager = LoadingStateManager()
+    
     let ingredient: RecipeIngredient
+    @State private var showingAddedConfirmation = false
     
     var body: some View {
         HStack {
@@ -1696,13 +1715,41 @@ struct ModernIngredientRow: View {
             
             Spacer()
             
-            Image(systemName: "cart.badge.plus")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(DesignSystem.Colors.accent)
-                .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
+            Button(action: addToCart) {
+                Image(systemName: showingAddedConfirmation ? "checkmark.circle.fill" : "cart.badge.plus")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(showingAddedConfirmation ? .green : DesignSystem.Colors.accent)
+                    .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
+            }
+            .buttonStyle(PlainButtonStyle())
         }
         .padding(DesignSystem.Spacing.md)
         .minimalistCard(.outlined)
+    }
+    
+    private func addToCart() {
+        loadingManager.startLoading(message: "Adding to cart...")
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            let cartItem = CartItem(
+                name: ingredient.item,
+                quantity: ingredient.quantity
+            )
+            modelContext.insert(cartItem)
+            modelContext.saveWithDebounce(using: autoSaveManager)
+            
+            withAnimation {
+                showingAddedConfirmation = true
+            }
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                withAnimation {
+                    showingAddedConfirmation = false
+                }
+            }
+            
+            loadingManager.stopLoading()
+        }
     }
 }
 
@@ -2611,6 +2658,7 @@ struct RecipeCategoryMenuView: View {
     @Binding var selectedCategory: RecipeCategory
     let filteredRecipes: [Recipe]
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Recipe.createdDate, order: .reverse) private var allRecipes: [Recipe]
     
     var body: some View {
         NavigationView {
@@ -2640,7 +2688,7 @@ struct RecipeCategoryMenuView: View {
                             RecipeCategoryMenuItem(
                                 category: category,
                                 isSelected: selectedCategory == category,
-                                recipeCount: filteredRecipes.filter { $0.category == category.rawValue }.count,
+                                recipeCount: allRecipes.filter { $0.category == category.rawValue }.count,
                                 action: {
                                     selectedCategory = category
                                     dismiss()
@@ -3014,6 +3062,7 @@ struct RecipeImagePicker: UIViewControllerRepresentable {
     
     class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         let parent: RecipeImagePicker
+        @StateObject private var autoSaveManager = AutoSaveManager()
         
         init(_ parent: RecipeImagePicker) {
             self.parent = parent
@@ -3023,6 +3072,11 @@ struct RecipeImagePicker: UIViewControllerRepresentable {
             if let image = info[.originalImage] as? UIImage {
                 parent.selectedImage = image
                 parent.recipe.imageData = image.jpegData(compressionQuality: 0.8) ?? Data()
+                
+                // Save the image changes
+                if let context = parent.recipe.modelContext {
+                    context.saveWithDebounce(using: autoSaveManager)
+                }
             }
             parent.dismiss()
         }

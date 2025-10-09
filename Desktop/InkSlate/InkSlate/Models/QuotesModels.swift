@@ -15,12 +15,14 @@ class Quote {
     var author: String = ""
     var category: String = ""
     var createdDate: Date = Date()
+    var isFavorite: Bool = false
     
     init(text: String, author: String, category: String) {
         self.text = text
         self.author = author
         self.category = category
         self.createdDate = Date()
+        self.isFavorite = false
     }
 }
 

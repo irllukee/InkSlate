@@ -69,6 +69,8 @@ struct MainContentView: View {
                 BookshelfView()
             case .todo:
                 TodoMainView()
+            case .budget:
+                BudgetMainView()
             case .places:
                 PlacesMainView()
             case .watchlist:
@@ -77,6 +79,8 @@ struct MainContentView: View {
                 ModernQuotesMainView()
             case .recipes:
                 ModernRecipeMainView()
+            case .calendar:
+                CalendarMainView()
             case .settings:
                 SettingsView()
             case .profile:

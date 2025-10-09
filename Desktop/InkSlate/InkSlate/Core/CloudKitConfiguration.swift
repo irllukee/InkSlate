@@ -33,7 +33,9 @@ struct CloudKitConfig {
         // Places
         Place.self, PlaceCategory.self,
         // Movies/TV
-        WatchlistItem.self
+        WatchlistItem.self,
+        // Budget
+        BudgetCategory.self, BudgetSubcategory.self, BudgetItem.self
     ])
 }
 
