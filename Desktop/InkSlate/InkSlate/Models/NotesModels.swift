@@ -17,7 +17,7 @@ class Note {
     var content: Data = Data() // Stores NSAttributedString as RTF data
     var createdDate: Date = Date()
     var modifiedDate: Date = Date()
-    @Relationship(deleteRule: .nullify) var folder: Folder?
+    @Relationship(deleteRule: .nullify, inverse: \Folder.notes) var folder: Folder?
     var isPasswordProtected: Bool = false
     var passwordHash: String = "" // Stores hashed password (empty string instead of nil)
     var passwordSalt: String = "" // Stores salt for password hashing (empty string instead of nil)

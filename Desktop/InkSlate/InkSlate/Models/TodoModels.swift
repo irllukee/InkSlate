@@ -35,7 +35,7 @@ class TodoTask {
     var isCompleted: Bool = false
     var createdDate: Date = Date()
     var completedDate: Date = Date.distantPast
-    @Relationship(deleteRule: .nullify) var tab: TodoTab?
+    @Relationship(deleteRule: .nullify, inverse: \TodoTab.tasks) var tab: TodoTab?
     
     init(title: String = "New Task", description: String = "", isCompleted: Bool = false) {
         self.title = title

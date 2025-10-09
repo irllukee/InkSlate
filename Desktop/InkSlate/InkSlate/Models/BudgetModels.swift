@@ -52,7 +52,7 @@ class BudgetSubcategory {
     var icon: String = "circle.fill"
     var createdDate: Date = Date()
     var sortOrder: Int = 0
-    @Relationship(deleteRule: .nullify) var category: BudgetCategory?
+    @Relationship(deleteRule: .nullify, inverse: \BudgetCategory.subcategories) var category: BudgetCategory?
     var budgetItems: [BudgetItem]?
     
     init(name: String, icon: String = "circle.fill", sortOrder: Int = 0, category: BudgetCategory? = nil) {
@@ -79,7 +79,7 @@ class BudgetItem {
     var recurringFrequency: String = "monthly" // daily, weekly, monthly, yearly
     var isDeleted: Bool = false
     var deletedDate: Date = Date.distantPast
-    @Relationship(deleteRule: .nullify) var category: BudgetCategory?
+    @Relationship(deleteRule: .nullify, inverse: \BudgetCategory.budgetItems) var category: BudgetCategory?
     @Relationship(deleteRule: .nullify, inverse: \BudgetSubcategory.budgetItems) var subcategory: BudgetSubcategory?
     
     init(name: String, amount: Double, budgetAmount: Double = 0.0, date: Date = Date(), notes: String = "", isIncome: Bool = false, isRecurring: Bool = false, recurringFrequency: String = "monthly", category: BudgetCategory? = nil, subcategory: BudgetSubcategory? = nil) {

@@ -45,7 +45,7 @@ class Place {
     var pros: String = ""
     var cons: String = ""
     var createdDate: Date = Date()
-    @Relationship(deleteRule: .nullify) var category: PlaceCategory?
+    @Relationship(deleteRule: .nullify, inverse: \PlaceCategory.places) var category: PlaceCategory?
     
     init(
         name: String,

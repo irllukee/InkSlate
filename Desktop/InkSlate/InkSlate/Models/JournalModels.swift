@@ -89,7 +89,7 @@ class JournalEntry {
     var wordCount: Int = 0
     var usedPrompt: String = ""
     var promptCategory: String = ""
-    @Relationship(deleteRule: .nullify) var book: JournalBook?
+    @Relationship(deleteRule: .nullify, inverse: \JournalBook.entries) var book: JournalBook?
     
     init(content: NSAttributedString = NSAttributedString(string: ""), createdDate: Date = Date(), moodRating: Int = 5, sleepQuality: Int = 5, bedTime: Date? = nil, wakeTime: Date? = nil, isLucidDream: Bool = false, dreamTags: String = "", interpretationNotes: String = "", photoData: Data? = nil, book: JournalBook? = nil, wordCount: Int = 0, usedPrompt: String = "", promptCategory: String = "") {
         // Convert NSAttributedString to Data
