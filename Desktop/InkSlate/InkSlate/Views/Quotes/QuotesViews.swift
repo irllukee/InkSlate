@@ -1,6 +1,6 @@
 //
 //  QuotesViews.swift
-//  Slate
+//  InkSlate
 //
 //  Created by UI Overhaul on 9/29/25.
 //

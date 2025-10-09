@@ -1,6 +1,6 @@
 //
 //  SharedStateManager.swift
-//  Slate
+//  InkSlate
 //
 //  Created by Performance Optimization on 9/30/25.
 //

@@ -1,6 +1,6 @@
 //
 //  MindMapModels.swift
-//  Slate
+//  InkSlate
 //
 //  Created by Lucas Waldron on 9/29/25.
 //
@@ -13,8 +13,8 @@ import SwiftData
 class MindMapNode {
     var title: String = "New Node"
     var notes: String = ""
-    @Relationship(deleteRule: .cascade, inverse: \MindMapNode.parent) var children: [MindMapNode]? = []
-    var parent: MindMapNode?
+    var children: [MindMapNode]? = []
+    @Relationship(inverse: \MindMapNode.children) var parent: MindMapNode?
     @Relationship(deleteRule: .nullify) var mindMap: MindMap?
     
     init(title: String = "New Node", notes: String = "", parent: MindMapNode? = nil) {

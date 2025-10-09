@@ -1,6 +1,6 @@
 //
 //  NavigationComponents.swift
-//  Slate
+//  InkSlate
 //
 //  Created by Lucas Waldron on 9/29/25.
 //
@@ -66,7 +66,8 @@ struct HamburgerMenuButton: View {
                 }
             }
             .frame(width: 20, height: 18)
-            .padding(.trailing, -8)
+            .frame(width: 44, height: 44)  // Minimum tap target size
+            .contentShape(Rectangle())  // Make entire frame tappable
         }
         .scaleEffect(isHovering ? 1.1 : 1.0)
         .opacity(isHovering ? 0.7 : 1.0)

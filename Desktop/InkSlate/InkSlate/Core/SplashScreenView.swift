@@ -1,6 +1,6 @@
 //
 //  SplashScreenView.swift
-//  Slate
+//  InkSlate
 //
 //  Created by UI Enhancement on 9/30/25.
 //

@@ -72,7 +72,7 @@ class Note {
 class Folder {
     var name: String = "New Folder"
     var createdDate: Date = Date()
-    @Relationship(deleteRule: .cascade, inverse: \Note.folder) var notes: [Note]? = []
+    @Relationship(deleteRule: .cascade) var notes: [Note]? = []
     
     init(name: String = "New Folder") {
         self.name = name
@@ -81,6 +81,8 @@ class Folder {
 
 // MARK: - Notes Manager (replaces the Core Data version)
 class NotesManager: ObservableObject {
+    static let shared = NotesManager()
+    
     @Published var selectedFolder: Folder?
     @Published var showingTrash: Bool = false
     
@@ -143,14 +145,26 @@ class NotesManager: ObservableObject {
         
         do {
             let expiredNotes = try modelContext.fetch(descriptor)
-            for note in expiredNotes {
-                modelContext.delete(note)
-            }
-            if !expiredNotes.isEmpty {
-                try modelContext.save()
+            let noteCount = expiredNotes.count
+            
+            // Only proceed if there are notes to clean up
+            if noteCount > 0 {
+                for note in expiredNotes {
+                    modelContext.delete(note)
+                }
+                
+                // Save changes with proper error handling
+                do {
+                    try modelContext.save()
+                    print("🗑️ NotesManager: Successfully cleaned up \(noteCount) expired note(s)")
+                } catch {
+                    print("❌ NotesManager: Failed to save after cleanup - \(error.localizedDescription)")
+                }
+            } else {
+                print("✅ NotesManager: No expired notes to clean up")
             }
         } catch {
-            // Handle cleanup error silently
+            print("❌ NotesManager: Failed to fetch expired notes - \(error.localizedDescription)")
         }
     }
 

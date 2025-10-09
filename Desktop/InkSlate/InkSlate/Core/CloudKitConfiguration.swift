@@ -19,9 +19,9 @@ struct CloudKitConfig {
         // Notes
         Note.self, Folder.self,
         // Journal
-        JournalBook.self, JournalEntry.self,
+        JournalBook.self, JournalEntry.self, JournalPrompt.self,
         // Mind Map
-        MindMapNode.self,
+        MindMap.self, MindMapNode.self,
         // Simple Items
         Item.self,
         // Quotes
@@ -49,8 +49,10 @@ class CloudKitService {
     /// Checks if iCloud is available and user is signed in
     func isICloudAvailable() -> Bool {
         if FileManager.default.ubiquityIdentityToken != nil {
+            print("✅ iCloud: User is signed in and iCloud is available")
             return true
         } else {
+            print("⚠️ iCloud: User is NOT signed in or iCloud is unavailable")
             return false
         }
     }
@@ -61,7 +63,8 @@ class CloudKitService {
         let iCloudAvailable = isICloudAvailable()
         
         if iCloudAvailable {
-            // FIXED: Use .private() with explicit container identifier instead of .automatic
+            print("☁️ iCloud: Creating CloudKit-backed ModelContainer with identifier: \(CloudKitConfig.containerIdentifier)")
+            // Use .private() with explicit container identifier
             let ckConfig = ModelConfiguration(
                 schema: CloudKitConfig.schema,
                 cloudKitDatabase: .private(CloudKitConfig.containerIdentifier)
@@ -70,11 +73,16 @@ class CloudKitService {
             // Build the container with the schema + configuration
             do {
                 let container = try ModelContainer(for: CloudKitConfig.schema, configurations: [ckConfig])
+                print("✅ iCloud: Successfully created CloudKit-backed ModelContainer")
+                print("☁️ iCloud: Data will sync across devices using CloudKit private database")
                 return container
             } catch {
+                print("❌ iCloud: Failed to create CloudKit container: \(error.localizedDescription)")
+                print("⚠️ iCloud: Falling back to local-only storage")
                 return createLocalContainer()
             }
         } else {
+            print("📱 iCloud: Creating local-only ModelContainer (no iCloud sync)")
             return createLocalContainer()
         }
     }
@@ -86,8 +94,7 @@ class CloudKitService {
             let container = try ModelContainer(for: CloudKitConfig.schema, configurations: [localConfig])
             return container
         } catch {
-            // Last resort - this should rarely happen
-            fatalError("❌ Could not create ModelContainer: \(error.localizedDescription)")
+            fatalError("Could not create ModelContainer: \(error.localizedDescription)")
         }
     }
     
@@ -96,10 +103,12 @@ class CloudKitService {
         Task { @MainActor in
             do {
                 if container.mainContext.hasChanges {
+                    print("💾 iCloud: Saving changes to CloudKit...")
                     try container.mainContext.save()
+                    print("✅ iCloud: Changes saved successfully (will sync to iCloud)")
                 }
             } catch {
-                // Handle save error silently
+                print("❌ iCloud: Failed to save context: \(error.localizedDescription)")
             }
         }
     }
@@ -108,9 +117,11 @@ class CloudKitService {
     func forceSyncIfNeeded(container: ModelContainer) {
         Task { @MainActor in
             do {
+                print("🔄 iCloud: Manually triggering sync...")
                 try container.mainContext.save()
+                print("✅ iCloud: Manual sync completed")
             } catch {
-                // Handle sync error silently
+                print("❌ iCloud: Manual sync failed: \(error.localizedDescription)")
             }
         }
     }

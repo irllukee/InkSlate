@@ -1,6 +1,6 @@
 //
 //  SettingsViews.swift
-//  Slate
+//  InkSlate
 //
 //  Created by Lucas Waldron on 9/29/25.
 //

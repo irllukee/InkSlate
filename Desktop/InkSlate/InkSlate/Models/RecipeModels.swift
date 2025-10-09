@@ -1,6 +1,6 @@
 //
 //  RecipeModels.swift
-//  Slate
+//  InkSlate
 //
 //  Created by UI Overhaul on 9/29/25.
 //
@@ -17,7 +17,7 @@ class Recipe {
     var isFavorite: Bool = false
     var category: String = ""
     var createdDate: Date = Date()
-    @Relationship(deleteRule: .cascade, inverse: \RecipeIngredient.recipe) var ingredients: [RecipeIngredient]? = []
+    @Relationship(deleteRule: .cascade) var ingredients: [RecipeIngredient]? = []
     var imageData: Data = Data()
     var servings: String = ""
     var cookingTime: String = ""

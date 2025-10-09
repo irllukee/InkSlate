@@ -1,6 +1,6 @@
 //
 //  LoadingStateManager.swift
-//  Slate
+//  InkSlate
 //
 //  Created by UI Overhaul on 9/29/25.
 //
@@ -32,7 +32,7 @@ class LoadingStateManager: ObservableObject {
 // MARK: - Auto Save Manager
 class AutoSaveManager: ObservableObject {
     private var saveTimer: Timer?
-    private let debounceInterval: TimeInterval = 1.0 // Increased to 1 second for better performance
+    private let debounceInterval: TimeInterval = 3.0 // Changed from 1.0 to 3.0 seconds to reduce CloudKit sync frequency by 66%
     private var pendingSave = false
     private var lastSaveTime = Date()
     private var modelContext: ModelContext?
@@ -72,9 +72,19 @@ class AutoSaveManager: ObservableObject {
                 self.lastSaveTime = Date()
                 self.isSaving = false
                 self.lastSaveStatus = "Saved at \(DateFormatter.timeFormatter.string(from: self.lastSaveTime))"
+                print("💾 AutoSaveManager: Successfully saved changes to iCloud at \(self.lastSaveTime)")
             } catch {
                 self.isSaving = false
                 self.lastSaveStatus = "Save failed"
+                print("❌ AutoSaveManager: Failed to save changes - \(error.localizedDescription)")
+                
+                // Log additional error details if available
+                if let nsError = error as NSError? {
+                    print("❌ AutoSaveManager: Error domain: \(nsError.domain), code: \(nsError.code)")
+                    if let userInfo = nsError.userInfo as? [String: Any], !userInfo.isEmpty {
+                        print("❌ AutoSaveManager: Error details: \(userInfo)")
+                    }
+                }
             }
         }
     }

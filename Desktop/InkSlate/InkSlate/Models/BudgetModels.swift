@@ -8,6 +8,17 @@
 import Foundation
 import SwiftData
 
+// MARK: - Double Extension for NaN Safety
+extension Double {
+    /// Returns the value if it's valid (not NaN or infinite), otherwise returns the fallback
+    func safeValue(fallback: Double = 0.0) -> Double {
+        if self.isNaN || self.isInfinite {
+            return fallback
+        }
+        return self
+    }
+}
+
 // MARK: - Budget Data Models
 
 @Model
@@ -42,7 +53,6 @@ class BudgetSubcategory {
     var createdDate: Date = Date()
     var sortOrder: Int = 0
     @Relationship(deleteRule: .nullify) var category: BudgetCategory?
-    @Relationship(deleteRule: .cascade)
     var budgetItems: [BudgetItem]?
     
     init(name: String, icon: String = "circle.fill", sortOrder: Int = 0, category: BudgetCategory? = nil) {
@@ -70,7 +80,7 @@ class BudgetItem {
     var isDeleted: Bool = false
     var deletedDate: Date = Date.distantPast
     @Relationship(deleteRule: .nullify) var category: BudgetCategory?
-    @Relationship(deleteRule: .nullify) var subcategory: BudgetSubcategory?
+    @Relationship(deleteRule: .nullify, inverse: \BudgetSubcategory.budgetItems) var subcategory: BudgetSubcategory?
     
     init(name: String, amount: Double, budgetAmount: Double = 0.0, date: Date = Date(), notes: String = "", isIncome: Bool = false, isRecurring: Bool = false, recurringFrequency: String = "monthly", category: BudgetCategory? = nil, subcategory: BudgetSubcategory? = nil) {
         self.name = name
@@ -97,7 +107,8 @@ class BudgetItem {
     // Computed property for balance percentage
     var balancePercentage: Double {
         guard budgetAmount > 0 else { return 0 }
-        return (amount / budgetAmount) * 100
+        let percentage = (amount / budgetAmount) * 100
+        return percentage.safeValue(fallback: 0)
     }
     
     // Computed property for balance status
@@ -153,6 +164,8 @@ enum RecurringFrequency: String, CaseIterable {
 
 // MARK: - Budget Manager
 class BudgetManager: ObservableObject {
+    static let shared = BudgetManager()
+    
     @Published var selectedCategory: BudgetCategory?
     @Published var selectedSubcategory: BudgetSubcategory?
     @Published var showingTrash: Bool = false

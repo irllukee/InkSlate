@@ -1,6 +1,6 @@
 //
 //  MindMapViews.swift
-//  Slate
+//  InkSlate
 //
 //  Created by Lucas Waldron on 9/29/25.
 //
@@ -178,8 +178,8 @@ struct MindMapDetailView: View {
     }
     
     private func calculateOrbitalPosition(index: Int, totalNodes: Int, centerX: CGFloat, centerY: CGFloat) -> CGPoint {
-        // Define orbital rings with different radii
-        let orbitalRings: [CGFloat] = [120, 210, 300]
+        // Define orbital rings with different radii (2 rings instead of 3)
+        let orbitalRings: [CGFloat] = [120, 210]
         
         // Dynamically distribute nodes across rings based on total count
         let (ring, nodeIndexInRing, nodesInThisRing) = distributeNodesAcrossRings(
@@ -204,8 +204,8 @@ struct MindMapDetailView: View {
     }
     
     private func distributeNodesAcrossRings(index: Int, totalNodes: Int, ringCount: Int) -> (ring: Int, indexInRing: Int, nodesInRing: Int) {
-        // Ring capacities (ideal max nodes per ring)
-        let ringCapacities = [6, 10, 14]
+        // Ring capacities (ideal max nodes per ring) - 2 rings with 8 and 12 nodes
+        let ringCapacities = [8, 12]
         
         // For small numbers of nodes, keep them all on the innermost ring
         if totalNodes <= ringCapacities[0] {
@@ -244,8 +244,8 @@ struct MindMapDetailView: View {
         }
         
         // Fallback: place on the outermost ring if something went wrong
-        let lastRing = min(2, ringCount - 1)
-        return (lastRing, index - 16, max(1, totalNodes - 16))
+        let lastRing = min(1, ringCount - 1)
+        return (lastRing, index - 8, max(1, totalNodes - 8))
     }
     
     private func navigateToNode(_ node: MindMapNode) {
@@ -292,30 +292,33 @@ struct MindMapDetailView: View {
         GeometryReader { geometry in
             ZStack {
                 backgroundView
-                orbitalRingsView(geometry: geometry)
-                centerNodeView(geometry: geometry)
-                childNodesView(geometry: geometry)
-                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentNode.children?.count ?? 0)
-                actionBubblesView(geometry: geometry)
+                
+                // Scaled content (rings, nodes, action bubbles)
+                ZStack {
+                    orbitalRingsView(geometry: geometry)
+                    centerNodeView(geometry: geometry)
+                    childNodesView(geometry: geometry)
+                        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentNode.children?.count ?? 0)
+                    actionBubblesView(geometry: geometry)
+                }
+                .scaleEffect(calculateZoomScale())
+                .animation(.easeInOut(duration: 0.3), value: currentNode.children?.count ?? 0)
+                
+                // Add button stays fixed (not affected by zoom)
                 addButtonView
             }
-            .scaleEffect(calculateZoomScale())
-            .animation(.easeInOut(duration: 0.3), value: currentNode.children?.count ?? 0)
         }
     }
     
     private func calculateZoomScale() -> CGFloat {
         let childCount = currentNode.children?.count ?? 0
         
-        if childCount <= 6 {
+        if childCount <= 8 {
             // Only ring 1 visible
             return 1.0
-        } else if childCount <= 16 {
-            // Rings 1 & 2 visible
-            return 0.75
         } else {
-            // All 3 rings visible
-            return 0.55
+            // Both rings visible (up to 20 nodes)
+            return 0.75
         }
     }
     
@@ -330,11 +333,11 @@ struct MindMapDetailView: View {
     private func orbitalRingsView(geometry: GeometryProxy) -> some View {
         let centerX = geometry.size.width / 2
         let centerY = geometry.size.height / 2
-        let orbitalRings: [CGFloat] = [120, 210, 300]
+        let orbitalRings: [CGFloat] = [120, 210]
         
         // Only show rings that have nodes
         let childCount = currentNode.children?.count ?? 0
-        let ringCapacities = [6, 10, 14]
+        let ringCapacities = [8, 12]
         var visibleRings: [Int] = []
         var nodeCount = 0
         
@@ -447,7 +450,7 @@ struct MindMapDetailView: View {
     }
     
     private func addNewNode() {
-        guard (currentNode.children?.count ?? 0) < 30 else { return }
+        guard (currentNode.children?.count ?? 0) < 20 else { return }
         let newNode = MindMapNode(title: "New Topic", parent: currentNode)
         currentNode.addChild(newNode)
         try? modelContext.save()

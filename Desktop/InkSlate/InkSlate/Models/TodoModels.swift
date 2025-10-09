@@ -1,6 +1,6 @@
 //
 //  TodoModels.swift
-//  Slate
+//  InkSlate
 //
 //  Created by UI Overhaul on 9/29/25.
 //
@@ -15,7 +15,7 @@ class TodoTab {
     var name: String = "New Tab"
     var colorHex: String = "#99CCFF"
     var createdDate: Date = Date()
-    @Relationship(deleteRule: .cascade, inverse: \TodoTask.tab) var tasks: [TodoTask]? = []
+    @Relationship(deleteRule: .cascade) var tasks: [TodoTask]? = []
     
     var color: Color {
         get { Color(hex: colorHex) ?? Color.blue }
