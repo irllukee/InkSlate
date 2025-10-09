@@ -13,7 +13,7 @@ import SwiftData
 class MindMapNode {
     var title: String = "New Node"
     var notes: String = ""
-    var children: [MindMapNode]? = []
+    @Relationship(deleteRule: .cascade) var children: [MindMapNode]? = []
     @Relationship(inverse: \MindMapNode.children) var parent: MindMapNode?
     @Relationship(deleteRule: .nullify) var mindMap: MindMap?
     

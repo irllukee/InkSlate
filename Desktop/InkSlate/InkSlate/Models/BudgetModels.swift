@@ -53,7 +53,7 @@ class BudgetSubcategory {
     var createdDate: Date = Date()
     var sortOrder: Int = 0
     @Relationship(deleteRule: .nullify, inverse: \BudgetCategory.subcategories) var category: BudgetCategory?
-    var budgetItems: [BudgetItem]?
+    @Relationship(deleteRule: .cascade) var budgetItems: [BudgetItem]?
     
     init(name: String, icon: String = "circle.fill", sortOrder: Int = 0, category: BudgetCategory? = nil) {
         self.name = name
