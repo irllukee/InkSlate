@@ -42,7 +42,7 @@ class Recipe {
 class RecipeIngredient {
     var quantity: String = ""
     var item: String = ""
-    @Relationship(deleteRule: .nullify) var recipe: Recipe?
+    @Relationship(deleteRule: .nullify, inverse: \Recipe.ingredients) var recipe: Recipe?
     
     init(quantity: String = "", item: String = "") {
         self.quantity = quantity
