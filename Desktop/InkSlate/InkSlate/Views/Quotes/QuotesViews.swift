@@ -16,7 +16,8 @@ struct ModernQuotesMainView: View {
     @StateObject private var loadingManager = LoadingStateManager()
     @StateObject private var autoSaveManager = AutoSaveManager()
     
-    @Query private var allQuotes: [Quote]
+    // ✅ OPTIMIZED: Added sort to query to avoid redundant sorting
+    @Query(sort: \Quote.createdDate, order: .reverse) private var allQuotes: [Quote]
     @State private var selectedCategory: QuoteCategory? = .motivation
     @State private var searchText = ""
     @State private var showingAddQuote = false
@@ -32,13 +33,14 @@ struct ModernQuotesMainView: View {
             categoryQuotes = allQuotes
         }
         
+        // ✅ OPTIMIZED: Removed redundant sorting - will add sort to @Query instead
         if searchText.isEmpty {
-            return categoryQuotes.sorted { $0.createdDate > $1.createdDate }
+            return categoryQuotes
         } else {
             return categoryQuotes.filter { quote in
                 quote.text.localizedCaseInsensitiveContains(searchText) ||
                 quote.author.localizedCaseInsensitiveContains(searchText)
-            }.sorted { $0.createdDate > $1.createdDate }
+            }
         }
     }
     

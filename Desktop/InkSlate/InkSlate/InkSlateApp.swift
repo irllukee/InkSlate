@@ -9,14 +9,17 @@ import SwiftUI
 import SwiftData
 import Foundation
 import UIKit
+import BackgroundTasks
 
 @main
 struct InkSlateApp: App {
-    // Timer for periodic cleanup of soft-deleted items
-    @State private var cleanupTimer: Timer?
+    // ✅ OPTIMIZED: Removed Timer, using BGAppRefreshTask instead for better battery life
     
     init() {
         // No longer need NSAttributedStringTransformer since we store Data directly
+        
+        // ✅ OPTIMIZED: Register background task for cleanup
+        registerBackgroundTasks()
     }
     
     var body: some Scene {
@@ -27,11 +30,13 @@ struct InkSlateApp: App {
                     // Run cleanup on app launch
                     performCleanup()
                     
-                    // Schedule cleanup to run every 24 hours
-                    schedulePeriodicCleanup()
+                    // ✅ OPTIMIZED: Schedule background task instead of timer
+                    scheduleBackgroundCleanup()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
                     saveContext()
+                    // Schedule cleanup when app backgrounds
+                    scheduleBackgroundCleanup()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
                     saveContext()
@@ -63,9 +68,6 @@ struct InkSlateApp: App {
             
             print("🧹 InkSlate: Starting automatic cleanup of soft-deleted items...")
             
-            // Cleanup expired notes
-            NotesManager.shared.cleanupExpiredNotes(with: context)
-            
             // Cleanup expired budget items
             BudgetManager.shared.cleanupExpiredItems(with: context)
             
@@ -73,20 +75,50 @@ struct InkSlateApp: App {
         }
     }
     
-    /// Schedules periodic cleanup to run every 24 hours
-    private func schedulePeriodicCleanup() {
-        // Run cleanup every 24 hours (86400 seconds)
-        cleanupTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in
-            print("⏰ InkSlate: Running scheduled 24-hour cleanup...")
-            Task { @MainActor in
-                let context = sharedModelContainer.mainContext
-                print("🧹 InkSlate: Starting scheduled cleanup of soft-deleted items...")
-                NotesManager.shared.cleanupExpiredNotes(with: context)
-                BudgetManager.shared.cleanupExpiredItems(with: context)
-                print("✅ InkSlate: Scheduled cleanup completed at \(Date())")
-            }
+    // ✅ OPTIMIZED: Use BGAppRefreshTask instead of Timer for better battery life
+    private func registerBackgroundTasks() {
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: "com.lucas.InkSlateNew.cleanup",
+            using: nil
+        ) { task in
+            self.handleBackgroundCleanup(task: task as! BGAppRefreshTask)
         }
         
-        print("⏱️ InkSlate: Scheduled automatic cleanup to run every 24 hours")
+        print("✅ InkSlate: Registered background cleanup task")
+    }
+    
+    private func scheduleBackgroundCleanup() {
+        let request = BGAppRefreshTaskRequest(identifier: "com.lucas.InkSlateNew.cleanup")
+        // Schedule for next day
+        request.earliestBeginDate = Calendar.current.date(byAdding: .day, value: 1, to: Date())
+        
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            print("✅ InkSlate: Scheduled background cleanup for tomorrow")
+        } catch {
+            print("⚠️ InkSlate: Could not schedule background cleanup: \(error.localizedDescription)")
+        }
+    }
+    
+    private func handleBackgroundCleanup(task: BGAppRefreshTask) {
+        // Set expiration handler
+        task.expirationHandler = {
+            print("⏱️ InkSlate: Background cleanup task expired")
+        }
+        
+        Task { @MainActor in
+            print("🧹 InkSlate: Running background cleanup...")
+            let context = sharedModelContainer.mainContext
+            
+            BudgetManager.shared.cleanupExpiredItems(with: context)
+            
+            print("✅ InkSlate: Background cleanup completed")
+            
+            // Mark task as complete
+            task.setTaskCompleted(success: true)
+            
+            // Schedule next cleanup
+            scheduleBackgroundCleanup()
+        }
     }
 }

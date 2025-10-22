@@ -81,8 +81,8 @@ class AutoSaveManager: ObservableObject {
                 // Log additional error details if available
                 if let nsError = error as NSError? {
                     print("❌ AutoSaveManager: Error domain: \(nsError.domain), code: \(nsError.code)")
-                    if let userInfo = nsError.userInfo as? [String: Any], !userInfo.isEmpty {
-                        print("❌ AutoSaveManager: Error details: \(userInfo)")
+                    if !nsError.userInfo.isEmpty {
+                        print("❌ AutoSaveManager: Error details: \(nsError.userInfo)")
                     }
                 }
             }
@@ -94,6 +94,7 @@ class AutoSaveManager: ObservableObject {
         performSave()
     }
     
+    // ✅ OPTIMIZED: Proper cleanup to prevent memory leaks
     deinit {
         saveTimer?.invalidate()
         saveTimer = nil
@@ -126,6 +127,22 @@ extension ModelContext {
             try self.save()
         } catch {
             print("Error force saving: \(error)")
+        }
+    }
+    
+    // ✅ OPTIMIZED: Batch multiple operations with single save
+    func performBatch(_ operation: () throws -> Void) throws {
+        try operation()
+        if hasChanges {
+            try save()
+        }
+    }
+    
+    // ✅ OPTIMIZED: Async batch operations
+    func performBatchAsync(_ operation: @escaping () throws -> Void) async throws {
+        try operation()
+        if hasChanges {
+            try save()
         }
     }
 }

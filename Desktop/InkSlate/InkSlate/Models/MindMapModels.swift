@@ -13,13 +13,15 @@ import SwiftData
 class MindMapNode {
     var title: String = "New Node"
     var notes: String = ""
+    var ring: Int = 0  // Which ring this node is on (0 = inner, 1 = outer)
     @Relationship(deleteRule: .cascade) var children: [MindMapNode]? = []
     @Relationship(inverse: \MindMapNode.children) var parent: MindMapNode?
     @Relationship(deleteRule: .nullify) var mindMap: MindMap?
     
-    init(title: String = "New Node", notes: String = "", parent: MindMapNode? = nil) {
+    init(title: String = "New Node", notes: String = "", parent: MindMapNode? = nil, ring: Int = 0) {
         self.title = title
         self.notes = notes
+        self.ring = ring
         self.parent = parent
         self.children = []
     }

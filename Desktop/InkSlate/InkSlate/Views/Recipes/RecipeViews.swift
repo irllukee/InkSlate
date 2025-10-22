@@ -15,6 +15,7 @@ struct ModernRecipeMainView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var sharedState: SharedStateManager
     
+    // ✅ OPTIMIZED: No fetchLimit - recipes filtered by category, typically < 100 per category
     @Query(sort: \Recipe.createdDate, order: .reverse) private var allRecipes: [Recipe]
     @Query(sort: \FridgeItem.createdDate, order: .reverse) private var allFridgeItems: [FridgeItem]
     @Query(sort: \SpiceItem.createdDate, order: .reverse) private var allSpiceItems: [SpiceItem]
@@ -323,82 +324,80 @@ struct ModernRecipeCard: View {
     
     var body: some View {
         Button(action: { showingDetail = true }) {
-            VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
-            // Recipe Image
-            ZStack {
-                if let image = recipe.image {
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(height: 200)
-                        .clipped()
-                } else {
-                    Rectangle()
-                        .fill(DesignSystem.Colors.backgroundTertiary)
-                        .frame(height: 200)
-                        .overlay(
-                            Image(systemName: "photo")
-                                .font(.system(size: 40))
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
-                        )
-                }
-                
-                // Edit buttons overlay
-                VStack {
-                    HStack {
+            HStack(spacing: DesignSystem.Spacing.md) {
+                // Recipe Image (Thumbnail)
+                ZStack {
+                    if let image = recipe.image {
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 80, height: 80)
+                            .clipped()
+                    } else {
+                        Rectangle()
+                            .fill(DesignSystem.Colors.backgroundTertiary)
+                            .frame(width: 80, height: 80)
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                            )
+                    }
+                    
+                    // Edit image button overlay
+                    VStack {
                         Spacer()
-                        Button(action: { showingImagePicker = true }) {
-                            Image(systemName: "camera.fill")
-                                .font(.system(size: 16))
-                                .foregroundColor(.white)
-                                .padding(8)
-                                .background(
-                                    Circle()
-                                        .fill(Color.black.opacity(0.6))
-                                )
+                        HStack {
+                            Spacer()
+                            Button(action: { showingImagePicker = true }) {
+                                Image(systemName: "camera.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.white)
+                                    .padding(4)
+                                    .background(
+                                        Circle()
+                                            .fill(Color.black.opacity(0.6))
+                                    )
+                            }
                         }
                     }
-                    Spacer()
+                    .padding(4)
                 }
-                .padding(DesignSystem.Spacing.sm)
-            }
-            .cornerRadius(DesignSystem.CornerRadius.md)
-            
-            // Recipe Info
-            VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                HStack {
-                    Text(recipe.name)
-                        .font(DesignSystem.Typography.title3)
-                        .fontWeight(.semibold)
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                        .lineLimit(2)
-                    
-                    Spacer()
-                    
-                    HStack(spacing: DesignSystem.Spacing.sm) {
-                        if recipe.isFavorite {
-                            Image(systemName: "star.fill")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(.yellow)
-                        }
-                        
-                        Button(action: { showingEditSheet = true }) {
-                            Image(systemName: "pencil")
-                                .font(.system(size: 16))
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .onTapGesture { }
-                    }
-                }
+                .cornerRadius(DesignSystem.CornerRadius.sm)
                 
-                // Recipe details
-                if !recipe.servings.isEmpty || !recipe.cookingTime.isEmpty {
-                    HStack(spacing: DesignSystem.Spacing.md) {
-                        if !recipe.servings.isEmpty {
-                            HStack(spacing: DesignSystem.Spacing.xs) {
-                                Image(systemName: "person.2")
+                // Recipe Info
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(recipe.name)
+                            .font(DesignSystem.Typography.body)
+                            .fontWeight(.medium)
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                            .lineLimit(1)
+                        
+                        Spacer()
+                        
+                        HStack(spacing: DesignSystem.Spacing.xs) {
+                            if recipe.isFavorite {
+                                Image(systemName: "star.fill")
                                     .font(.system(size: 12))
+                                    .foregroundColor(.yellow)
+                            }
+                            
+                            Button(action: { showingEditSheet = true }) {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    
+                    // Recipe details row
+                    HStack(spacing: DesignSystem.Spacing.sm) {
+                        if !recipe.servings.isEmpty {
+                            HStack(spacing: 2) {
+                                Image(systemName: "person.2")
+                                    .font(.system(size: 10))
                                     .foregroundColor(DesignSystem.Colors.textSecondary)
                                 Text(recipe.servings)
                                     .font(DesignSystem.Typography.caption)
@@ -407,9 +406,9 @@ struct ModernRecipeCard: View {
                         }
                         
                         if !recipe.cookingTime.isEmpty {
-                            HStack(spacing: DesignSystem.Spacing.xs) {
+                            HStack(spacing: 2) {
                                 Image(systemName: "clock")
-                                    .font(.system(size: 12))
+                                    .font(.system(size: 10))
                                     .foregroundColor(DesignSystem.Colors.textSecondary)
                                 Text(recipe.cookingTime)
                                     .font(DesignSystem.Typography.caption)
@@ -417,33 +416,36 @@ struct ModernRecipeCard: View {
                             }
                         }
                         
-                        Spacer()
+                        if let ingredientsCount = recipe.ingredients?.count, ingredientsCount > 0 {
+                            HStack(spacing: 2) {
+                                Image(systemName: "list.bullet")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                                Text("\(ingredientsCount)")
+                                    .font(DesignSystem.Typography.caption)
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                            }
+                        }
+                    }
+                    
+                    // Recipe preview
+                    if !recipe.instructions.isEmpty {
+                        Text(recipe.instructions)
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                            .lineLimit(2)
                     }
                 }
-                
-                // Ingredients preview
-                Text("\(recipe.ingredients?.count ?? 0) ingredients")
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                
-                // Recipe preview
-                if !recipe.instructions.isEmpty {
-                    Text(recipe.instructions)
-                        .font(DesignSystem.Typography.caption)
-                        .foregroundColor(DesignSystem.Colors.textSecondary)
-                        .lineLimit(2)
-                }
             }
-        }
-        .padding(DesignSystem.Spacing.md)
-        .background(
-            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
-                .fill(DesignSystem.Colors.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
-                        .stroke(DesignSystem.Colors.border, lineWidth: 1)
-                )
-        )
+            .padding(DesignSystem.Spacing.md)
+            .background(
+                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
+                    .fill(DesignSystem.Colors.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
+                            .stroke(DesignSystem.Colors.border, lineWidth: 1)
+                    )
+            )
         }
         .buttonStyle(PlainButtonStyle())
         .scaleEffect(isHovered ? 1.02 : 1.0)

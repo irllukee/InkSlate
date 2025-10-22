@@ -98,6 +98,7 @@ struct TodoMainView: View {
                             } else {
                                 ForEach(currentTasks) { task in
                                     TodoTaskRow(task: task)
+                                        .id(task.id) // ✅ OPTIMIZED: Stable identity
                                 }
                             }
                         }

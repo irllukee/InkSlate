@@ -27,46 +27,35 @@ struct PlacesMainView: View {
     }
     
     var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                // Header
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Places")
-                            .font(.largeTitle)
-                            .fontWeight(.bold)
-                        Spacer()
-                    }
-                    Text("Track restaurants, activities, and favorite spots")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal)
-                .padding(.top, 16)
-
-                // Segmented control in a subtle card
-                HStack {
-                    Picker("Type", selection: $selectedTab) {
-                        ForEach(PlaceType.allCases, id: \.self) { type in
-                            Text(type.rawValue).tag(type)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-
-                // Content
-                PlacesCategoryView(
-                    type: selectedTab.rawValue.lowercased(),
-                    categories: categories
-                )
+        VStack(spacing: 0) {
+            // Custom header right below navigation bar
+            HStack {
+                Text("Places")
+                    .font(.system(size: 34, weight: .bold))
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                
+                Spacer()
             }
-            .navigationTitle("Places")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark)
-            .accentColor(.black)
-            .navigationBarBackButtonHidden(false)
+            .padding(.horizontal, DesignSystem.Spacing.sm)
+            .padding(.bottom, DesignSystem.Spacing.md)
+
+            // Segmented control
+            HStack {
+                Picker("Type", selection: $selectedTab) {
+                    ForEach(PlaceType.allCases, id: \.self) { type in
+                        Text(type.rawValue).tag(type)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            .padding(.horizontal, DesignSystem.Spacing.sm)
+            .padding(.bottom, DesignSystem.Spacing.sm)
+
+            // Content
+            PlacesCategoryView(
+                type: selectedTab.rawValue.lowercased(),
+                categories: categories
+            )
         }
     }
 }
@@ -84,54 +73,8 @@ struct PlacesCategoryView: View {
         allPlaces.filter { $0.category?.type == type }
     }
     
-    private var wishlistCount: Int {
-        places.filter { !$0.hasVisited }.count
-    }
-    
-    private var favoritesCount: Int {
-        places.filter { $0.hasVisited && $0.overallRating >= 8 }.count
-    }
-    
     var body: some View {
         List {
-            Section("Quick Access") {
-                NavigationLink(destination: PlacesListView(
-                    category: nil,
-                    type: type,
-                    wishlistOnly: true
-                )) {
-                    Label {
-                        HStack {
-                            Text("Wishlist")
-                            Spacer()
-                            Text("\(wishlistCount)")
-                                .foregroundColor(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "star.fill")
-                            .foregroundColor(.black)
-                    }
-                }
-                
-                NavigationLink(destination: PlacesListView(
-                    category: nil,
-                    type: type,
-                    favoritesOnly: true
-                )) {
-                    Label {
-                        HStack {
-                            Text("Top Rated")
-                            Spacer()
-                            Text("\(favoritesCount)")
-                                .foregroundColor(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "heart.fill")
-                            .foregroundColor(.black)
-                    }
-                }
-            }
-            
             Section("Categories") {
                 ForEach(categories) { category in
                     NavigationLink(destination: PlacesListView(

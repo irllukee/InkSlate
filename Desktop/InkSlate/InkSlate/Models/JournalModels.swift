@@ -91,6 +91,12 @@ class JournalEntry {
     var promptCategory: String = ""
     @Relationship(deleteRule: .nullify, inverse: \JournalBook.entries) var book: JournalBook?
     
+    // ✅ OPTIMIZED: Transient cache properties for expensive RTF parsing
+    @Transient private var _cachedAttributedContent: NSAttributedString?
+    @Transient private var _cachedContentHash: Data?
+    @Transient private var _cachedPlainText: String?
+    @Transient private var _plainTextHash: Data?
+    
     init(content: NSAttributedString = NSAttributedString(string: ""), createdDate: Date = Date(), moodRating: Int = 5, sleepQuality: Int = 5, bedTime: Date? = nil, wakeTime: Date? = nil, isLucidDream: Bool = false, dreamTags: String = "", interpretationNotes: String = "", photoData: Data? = nil, book: JournalBook? = nil, wordCount: Int = 0, usedPrompt: String = "", promptCategory: String = "") {
         // Convert NSAttributedString to Data
         do {
@@ -113,16 +119,32 @@ class JournalEntry {
         self.book = book
     }
     
-    // Computed property for easy access
+    // ✅ OPTIMIZED: Cached attributed content - parses RTF only when content changes
     var attributedContent: NSAttributedString {
         get {
-            guard !content.isEmpty else {
-                return NSAttributedString(string: "")
+            // Return cached value if content hasn't changed
+            if let cached = _cachedAttributedContent,
+               _cachedContentHash == content {
+                return cached
             }
+            
+            // Parse and cache
+            guard !content.isEmpty else {
+                let empty = NSAttributedString(string: "")
+                _cachedAttributedContent = empty
+                _cachedContentHash = content
+                return empty
+            }
+            
             do {
-                return try NSAttributedString(data: content, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+                let parsed = try NSAttributedString(data: content, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+                _cachedAttributedContent = parsed
+                _cachedContentHash = content
+                return parsed
             } catch {
-                return NSAttributedString(string: "")
+                let empty = NSAttributedString(string: "")
+                _cachedAttributedContent = empty
+                return empty
             }
         }
         set {
@@ -131,6 +153,11 @@ class JournalEntry {
                 content = data
                 // Update word count when content changes
                 wordCount = newValue.string.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
+                // Invalidate caches
+                _cachedAttributedContent = nil
+                _cachedContentHash = nil
+                _cachedPlainText = nil
+                _plainTextHash = nil
             } catch {
                 content = Data()
                 wordCount = 0
@@ -138,9 +165,22 @@ class JournalEntry {
         }
     }
     
-    // Computed property for current word count
+    // ✅ OPTIMIZED: Cached plain text for search and word count
+    var plainTextContent: String {
+        if let cached = _cachedPlainText,
+           _plainTextHash == content {
+            return cached
+        }
+        
+        let plain = attributedContent.string
+        _cachedPlainText = plain
+        _plainTextHash = content
+        return plain
+    }
+    
+    // Computed property for current word count using cached plain text
     var currentWordCount: Int {
-        return attributedContent.string.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
+        return plainTextContent.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.count
     }
 }
 

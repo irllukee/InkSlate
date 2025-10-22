@@ -125,9 +125,12 @@ struct MindMapDetailView: View {
         }
         .sheet(isPresented: $showingEditSheet) {
             if let selectedNode = selectedNodeForAction {
-                EditNodeView(node: selectedNode) {
-                    selectedNodeForAction = nil
-                }
+                EditNodeView(
+                    node: selectedNode,
+                    onDismiss: {
+                        selectedNodeForAction = nil
+                    }
+                )
             } else {
                 Text("No node selected")
                     .padding()
@@ -163,89 +166,49 @@ struct MindMapDetailView: View {
             return CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
         }
         
-        if let children = currentNode.children,
-           let index = children.firstIndex(where: { $0.id == node.id }) {
-            let position = calculateOrbitalPosition(
-                index: index,
-                totalNodes: children.count,
-                centerX: geometry.size.width / 2,
-                centerY: geometry.size.height / 2
-            )
-            return position
+        let children = currentNode.children ?? []
+        
+        // Group nodes by ring
+        let ring0Nodes = children.filter { $0.ring == 0 }
+        let ring1Nodes = children.filter { $0.ring == 1 }
+        
+        // Determine which ring group this node belongs to
+        let nodesInRing: Int
+        let indexInRing: Int
+        
+        if node.ring == 0 {
+            nodesInRing = ring0Nodes.count
+            indexInRing = ring0Nodes.firstIndex(where: { $0.id == node.id }) ?? 0
+        } else {
+            nodesInRing = ring1Nodes.count
+            indexInRing = ring1Nodes.firstIndex(where: { $0.id == node.id }) ?? 0
         }
         
-        return CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+        return calculateOrbitalPosition(
+            node: node,
+            nodesInRing: nodesInRing,
+            indexInRing: indexInRing,
+            centerX: geometry.size.width / 2,
+            centerY: geometry.size.height / 2
+        )
     }
     
-    private func calculateOrbitalPosition(index: Int, totalNodes: Int, centerX: CGFloat, centerY: CGFloat) -> CGPoint {
-        // Define orbital rings with different radii (2 rings instead of 3)
+    private func calculateOrbitalPosition(node: MindMapNode, nodesInRing: Int, indexInRing: Int, centerX: CGFloat, centerY: CGFloat) -> CGPoint {
+        // Define orbital rings with different radii
         let orbitalRings: [CGFloat] = [120, 210]
         
-        // Dynamically distribute nodes across rings based on total count
-        let (ring, nodeIndexInRing, nodesInThisRing) = distributeNodesAcrossRings(
-            index: index,
-            totalNodes: totalNodes,
-            ringCount: orbitalRings.count
-        )
+        // Use the stored ring value
+        let radius = orbitalRings[min(node.ring, orbitalRings.count - 1)]
         
-        // Ensure ring is within bounds
-        let safeRing = min(ring, orbitalRings.count - 1)
-        let radius = orbitalRings[safeRing]
-        
-        // Calculate angle for this node
+        // Calculate angle for this node based on its position in its ring
         let startAngle = -Double.pi / 2  // Start at top
-        let angleStep = 2 * Double.pi / Double(max(nodesInThisRing, 1))
-        let angle = startAngle + Double(nodeIndexInRing) * angleStep
+        let angleStep = 2 * Double.pi / Double(max(nodesInRing, 1))
+        let angle = startAngle + Double(indexInRing) * angleStep
         
         let x = centerX + cos(angle) * radius
         let y = centerY + sin(angle) * radius
         
         return CGPoint(x: x, y: y)
-    }
-    
-    private func distributeNodesAcrossRings(index: Int, totalNodes: Int, ringCount: Int) -> (ring: Int, indexInRing: Int, nodesInRing: Int) {
-        // Ring capacities (ideal max nodes per ring) - 2 rings with 8 and 12 nodes
-        let ringCapacities = [8, 12]
-        
-        // For small numbers of nodes, keep them all on the innermost ring
-        if totalNodes <= ringCapacities[0] {
-            return (0, index, totalNodes)
-        }
-        
-        // Calculate which ring this node belongs to based on filling rings sequentially
-        var nodesAccountedFor = 0
-        var currentRing = 0
-        
-        // Fill rings in order until we find where this node belongs
-        for (ringIndex, capacity) in ringCapacities.enumerated() {
-            let nodesInThisRing: Int
-            
-            if totalNodes <= nodesAccountedFor + capacity {
-                // This ring is partially filled or is the last ring needed
-                nodesInThisRing = totalNodes - nodesAccountedFor
-            } else {
-                // This ring is completely filled
-                nodesInThisRing = capacity
-            }
-            
-            // Check if the current node index falls within this ring
-            if index < nodesAccountedFor + nodesInThisRing {
-                currentRing = ringIndex
-                let indexInRing = index - nodesAccountedFor
-                return (currentRing, indexInRing, nodesInThisRing)
-            }
-            
-            nodesAccountedFor += capacity
-            
-            // Stop if we've accounted for all nodes
-            if nodesAccountedFor >= totalNodes {
-                break
-            }
-        }
-        
-        // Fallback: place on the outermost ring if something went wrong
-        let lastRing = min(1, ringCount - 1)
-        return (lastRing, index - 8, max(1, totalNodes - 8))
     }
     
     private func navigateToNode(_ node: MindMapNode) {
@@ -311,14 +274,15 @@ struct MindMapDetailView: View {
     }
     
     private func calculateZoomScale() -> CGFloat {
-        let childCount = currentNode.children?.count ?? 0
+        let children = currentNode.children ?? []
+        let hasRing1Nodes = children.contains { $0.ring == 1 }
         
-        if childCount <= 8 {
-            // Only ring 1 visible
-            return 1.0
-        } else {
-            // Both rings visible (up to 20 nodes)
+        if hasRing1Nodes {
+            // Both rings visible
             return 0.75
+        } else {
+            // Only ring 0 visible
+            return 1.0
         }
     }
     
@@ -336,16 +300,14 @@ struct MindMapDetailView: View {
         let orbitalRings: [CGFloat] = [120, 210]
         
         // Only show rings that have nodes
-        let childCount = currentNode.children?.count ?? 0
-        let ringCapacities = [8, 12]
+        let children = currentNode.children ?? []
         var visibleRings: [Int] = []
-        var nodeCount = 0
         
-        for (index, capacity) in ringCapacities.enumerated() {
-            if childCount > nodeCount {
-                visibleRings.append(index)
-                nodeCount += capacity
-            }
+        if children.contains(where: { $0.ring == 0 }) {
+            visibleRings.append(0)
+        }
+        if children.contains(where: { $0.ring == 1 }) {
+            visibleRings.append(1)
         }
         
         return ZStack {
@@ -373,11 +335,26 @@ struct MindMapDetailView: View {
         .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
     }
     
+    @ViewBuilder
     private func childNodesView(geometry: GeometryProxy) -> some View {
-        ForEach(Array((currentNode.children ?? []).enumerated()), id: \.element.id) { index, child in
+        let children = currentNode.children ?? []
+        let ring0Nodes = children.filter { $0.ring == 0 }
+        let ring1Nodes = children.filter { $0.ring == 1 }
+        
+        ForEach(children, id: \.id) { child in
+            let nodesInRing = child.ring == 0 ? ring0Nodes.count : ring1Nodes.count
+            let indexInRing: Int = {
+                if child.ring == 0 {
+                    return ring0Nodes.firstIndex(where: { $0.id == child.id }) ?? 0
+                } else {
+                    return ring1Nodes.firstIndex(where: { $0.id == child.id }) ?? 0
+                }
+            }()
+            
             let position = calculateOrbitalPosition(
-                index: index,
-                totalNodes: currentNode.children?.count ?? 0,
+                node: child,
+                nodesInRing: nodesInRing,
+                indexInRing: indexInRing,
                 centerX: geometry.size.width / 2,
                 centerY: geometry.size.height / 2
             )
@@ -451,9 +428,19 @@ struct MindMapDetailView: View {
     
     private func addNewNode() {
         guard (currentNode.children?.count ?? 0) < 20 else { return }
-        let newNode = MindMapNode(title: "New Topic", parent: currentNode)
+        
+        // Determine which ring to place the new node on
+        let children = currentNode.children ?? []
+        let ring0Count = children.filter { $0.ring == 0 }.count
+        let assignedRing = ring0Count < 9 ? 0 : 1
+        
+        let newNode = MindMapNode(title: "New Topic", parent: currentNode, ring: assignedRing)
         currentNode.addChild(newNode)
         try? modelContext.save()
+        
+        // Immediately open edit sheet for the new node
+        selectedNodeForAction = newNode
+        showingEditSheet = true
     }
     
     private func deleteNode(_ node: MindMapNode) {
@@ -474,54 +461,140 @@ struct NodeBubbleView: View {
     }
     
     private var fontSize: CGFloat {
-        let titleLength = node.title.count
-        let baseFontSize: CGFloat = isCenter ? 18 : 16
-        
-        if titleLength > 8 {
-            return max(8, baseFontSize - CGFloat(titleLength - 8) * 0.4)
+        let size = calculateOptimalFontSize()
+        // Extra safety: ensure the returned size is always valid
+        guard !size.isNaN && !size.isInfinite && size > 0 else {
+            return isCenter ? 18 : 16
         }
-        return baseFontSize
+        return size
+    }
+    
+    // Smart algorithm to calculate optimal font size based on text and bubble constraints
+    private func calculateOptimalFontSize() -> CGFloat {
+        let title = node.title
+        let maxFontSize: CGFloat = isCenter ? 18 : 16
+        let minFontSize: CGFloat = 7
+        
+        // Handle empty text
+        guard !title.isEmpty else {
+            return maxFontSize
+        }
+        
+        // Available space inside the bubble (accounting for padding and circular shape)
+        let horizontalPadding: CGFloat = 8
+        let verticalPadding: CGFloat = 6
+        let availableWidth = bubbleSize - (horizontalPadding * 2) - 8 // Extra margin for circular shape
+        let availableHeight = bubbleSize - (verticalPadding * 2) - 8
+        
+        // Ensure we have positive available space
+        guard availableWidth > 0 && availableHeight > 0 else {
+            return minFontSize
+        }
+        
+        // Character metrics
+        let charCount = CGFloat(title.count)
+        
+        // Estimate average character width at max font size (rough approximation)
+        let avgCharWidthRatio: CGFloat = 0.55 // Average char width is ~55% of font size
+        
+        // Calculate how many lines we'd need at max font size
+        let estimatedWidthAtMaxSize = charCount * (maxFontSize * avgCharWidthRatio)
+        let estimatedLines = max(1, ceil(estimatedWidthAtMaxSize / max(1, availableWidth)))
+        
+        // Calculate optimal size based on constraints
+        var optimalSize: CGFloat = maxFontSize
+        
+        // If text is short, use max size
+        if charCount <= 8 {
+            return maxFontSize
+        }
+        
+        // For longer text, calculate based on area constraint
+        if estimatedLines <= 3 {
+            // Try to fit in available lines
+            let heightPerLine = availableHeight / max(1, estimatedLines)
+            let fontSizeByHeight = heightPerLine * 0.8 // 80% of line height for text
+            
+            // Also check width constraint
+            let avgCharsPerLine = charCount / max(1, estimatedLines)
+            let fontSizeByWidth = (availableWidth / max(1, avgCharsPerLine)) / avgCharWidthRatio
+            
+            // Use the smaller of the two constraints, ensuring valid values
+            if fontSizeByHeight.isNaN || fontSizeByHeight.isInfinite {
+                optimalSize = maxFontSize
+            } else if fontSizeByWidth.isNaN || fontSizeByWidth.isInfinite {
+                optimalSize = fontSizeByHeight
+            } else {
+                optimalSize = min(fontSizeByHeight, fontSizeByWidth, maxFontSize)
+            }
+        } else {
+            // Too much text, use more aggressive scaling
+            let scaleFactor = 3.0 / max(1, estimatedLines)
+            optimalSize = maxFontSize * scaleFactor
+        }
+        
+        // Ensure optimalSize is valid after calculation
+        if optimalSize.isNaN || optimalSize.isInfinite || optimalSize <= 0 {
+            optimalSize = maxFontSize
+        }
+        
+        // Additional penalties for very long words (they're harder to wrap)
+        let words = title.components(separatedBy: " ")
+        let maxWordLength = words.map { $0.count }.max() ?? 0
+        if maxWordLength > 10 {
+            let penalty = CGFloat(maxWordLength - 10) * 0.3
+            optimalSize -= penalty
+        }
+        
+        // Clamp to min/max bounds and ensure no NaN or invalid values
+        let finalSize = max(minFontSize, min(maxFontSize, optimalSize))
+        
+        // Final safety check - if we somehow got NaN or invalid, return default
+        if finalSize.isNaN || finalSize.isInfinite || finalSize <= 0 {
+            return minFontSize
+        }
+        
+        return finalSize
     }
     
     var body: some View {
-        Text(node.title)
+        let textContent = Text(node.title)
             .font(.system(size: fontSize, weight: isCenter ? .semibold : .medium))
             .foregroundColor(.white)
             .multilineTextAlignment(.center)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(width: bubbleSize, height: bubbleSize)
-            .background(
-                ZStack {
-                    Circle()
-                        .fill(Color.black)
-                    
-                    if isCenter {
-                        Circle()
-                            .fill(
-                                RadialGradient(
-                                    colors: [Color.white.opacity(0.2), Color.clear],
-                                    center: .center,
-                                    startRadius: 0,
-                                    endRadius: bubbleSize / 2
-                                )
-                            )
-                    }
-                }
-            )
-            .overlay(
+            .lineLimit(3)
+            .minimumScaleFactor(0.5)
+        
+        let backgroundContent = ZStack {
+            Circle()
+                .fill(Color.black)
+            
+            if isCenter {
                 Circle()
-                    .stroke(
-                        isCenter ? Color.blue.opacity(0.6) : Color.gray.opacity(0.5),
-                        lineWidth: isCenter ? 2 : 1
+                    .fill(
+                        RadialGradient(
+                            colors: [Color.white.opacity(0.2), Color.clear],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: bubbleSize / 2
+                        )
                     )
-            )
-            .shadow(
-                color: isCenter ? Color.blue.opacity(0.3) : Color.black.opacity(0.2),
-                radius: isCenter ? 8 : 4,
-                x: 0,
-                y: 2
-            )
+            }
+        }
+        
+        let strokeColor = isCenter ? Color.blue.opacity(0.6) : Color.gray.opacity(0.5)
+        let strokeWidth: CGFloat = isCenter ? 2 : 1
+        
+        let shadowColor = isCenter ? Color.blue.opacity(0.3) : Color.black.opacity(0.2)
+        let shadowRadius: CGFloat = isCenter ? 8 : 4
+        
+        return textContent
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(width: bubbleSize, height: bubbleSize)
+            .background(backgroundContent)
+            .overlay(Circle().stroke(strokeColor, lineWidth: strokeWidth))
+            .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: 2)
             .onTapGesture {
                 onTap()
             }

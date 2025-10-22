@@ -2,240 +2,383 @@
 //  NotesModels.swift
 //  InkSlate
 //
-//  Created by Lucas Waldron on 9/29/25.
-//
+//  Created by Lucas Waldron on 10/18/25.
+//  Based on FSNotes structure
+//  FIXED: Added proper ID field for encryption keychain storage
 
 import SwiftUI
 import SwiftData
-import CryptoKit
+import Foundation
 
-// MARK: - Notes Data Models
+// MARK: - Notes Data Models (FSNotes-inspired)
 
 @Model
-class Note {
-    var title: String = "New Note"
-    var content: Data = Data() // Stores NSAttributedString as RTF data
+class FSNote {
+    @Attribute(.unique) var id: UUID?
+    var title: String = ""
+    var content: String = ""
+    var preview: String = ""
     var createdDate: Date = Date()
     var modifiedDate: Date = Date()
-    @Relationship(deleteRule: .nullify, inverse: \Folder.notes) var folder: Folder?
-    var isPasswordProtected: Bool = false
-    var passwordHash: String = "" // Stores hashed password (empty string instead of nil)
-    var passwordSalt: String = "" // Stores salt for password hashing (empty string instead of nil)
-    var passwordHint: String = "" // Optional hint for the password (empty string instead of nil)
+    var isPinned: Bool = false
+    var isEncrypted: Bool = false
+    var containerType: NoteContainer = NoteContainer.none
+    var noteType: NoteType = NoteType.markdown
+    var tags: [String] = []
+    var attachments: [String] = [] // URLs as strings
+    var imageUrls: [String] = [] // Image URLs as strings
+    var selectedRange: String = "" // NSRange as string
+    var fileName: String = ""
+    var originalExtension: String = ""
+    var isBlocked: Bool = false
+    var isParsed: Bool = false
+    var modifiedLocalAt: Date = Date()
+    var project: FSProject?
     var isDeleted: Bool = false
-    var deletedDate: Date = Date.distantPast // Use distant past instead of nil
+    var deletedDate: Date? = nil
     
-    init(title: String = "New Note", content: Data = Data(), folder: Folder? = nil, isPasswordProtected: Bool = false, passwordHash: String? = nil, passwordSalt: String? = nil, passwordHint: String? = nil) {
-        // Ensure title is never nil or empty - this prevents the keypath error
-        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "New Note" : title.trimmingCharacters(in: .whitespacesAndNewlines)
+    init(title: String = "", content: String = "", project: FSProject? = nil) {
+        self.id = UUID()
+        self.title = title.isEmpty ? "New Note" : title
         self.content = content
         self.createdDate = Date()
         self.modifiedDate = Date()
-        self.folder = folder
-        self.isPasswordProtected = isPasswordProtected
-        self.passwordHash = passwordHash ?? ""
-        self.passwordSalt = passwordSalt ?? ""
-        self.passwordHint = passwordHint ?? ""
-        self.isDeleted = false
-        self.deletedDate = Date.distantPast
+        self.project = project
+        self.fileName = title.isEmpty ? "New_Note" : title.replacingOccurrences(of: " ", with: "_")
+        self.originalExtension = noteType.fileExtension
+        self.preview = generatePreview(from: content)
     }
     
-    // Computed property to safely get title, ensuring it's never nil
-    var safeTitle: String {
-        return title.isEmpty ? "Untitled" : title
+    // Generate preview from content (first 200 characters) - OPTIMIZED
+    private func generatePreview(from content: String) -> String {
+        // Early return for empty content
+        guard !content.isEmpty else { return "" }
+        
+        // Use regex for more efficient markdown removal
+        let markdownPatterns = [
+            "#+\\s*",           // Headers
+            "\\*\\*([^*]+)\\*\\*", // Bold
+            "\\*([^*]+)\\*",    // Italic
+            "`([^`]+)`",        // Inline code
+            "~~([^~]+)~~",      // Strikethrough
+            "\\[([^\\]]+)\\]\\([^\\)]+\\)", // Links
+            ">\\s*",            // Blockquotes
+            "```[\\s\\S]*?```"  // Code blocks
+        ]
+        
+        var cleanContent = content
+        for pattern in markdownPatterns {
+            cleanContent = cleanContent.replacingOccurrences(of: pattern, with: "$1", options: .regularExpression)
+        }
+        
+        // Clean up extra whitespace
+        cleanContent = cleanContent
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        return String(cleanContent.prefix(200))
     }
     
-    // Computed property for attributed content
-    var attributedContent: NSAttributedString {
-        get {
-            guard !content.isEmpty else {
-                return NSAttributedString(string: "")
-            }
-            do {
-                return try NSAttributedString(data: content, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
-            } catch {
-                return NSAttributedString(string: "")
-            }
-        }
-        set {
-            do {
-                let data = try newValue.data(from: NSRange(location: 0, length: newValue.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
-                content = data
-            } catch {
-                // Handle save error silently
+    // Update preview when content changes - OPTIMIZED
+    func updatePreview() {
+        // Update preview immediately for better responsiveness
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            let newPreview = self.generatePreview(from: self.content)
+            
+            DispatchQueue.main.async {
+                self.preview = newPreview
+                self.modifiedDate = Date()
+                self.modifiedLocalAt = Date()
             }
         }
+    }
+    
+    // Add tag to note
+    func addTag(_ tag: String) {
+        if !tags.contains(tag) {
+            tags.append(tag)
+            modifiedDate = Date()
+        }
+    }
+    
+    // Remove tag from note
+    func removeTag(_ tag: String) {
+        tags.removeAll { $0 == tag }
+        modifiedDate = Date()
+    }
+    
+    // Toggle pin status
+    func togglePin() {
+        isPinned.toggle()
+        modifiedDate = Date()
+    }
+    
+    // Encrypt content with password (note: actual encryption happens in EncryptionService)
+    func encryptContent(password: String) throws {
+        guard !content.isEmpty else { return }
+        let encryptedData = try EncryptionService.shared.encrypt(data: content.data(using: .utf8)!, password: password)
+        self.content = encryptedData.base64EncodedString()
+        self.isEncrypted = true
+        self.containerType = .encryptedTextPack
+        self.modifiedDate = Date()
+    }
+    
+    // Decrypt content with password (note: actual decryption happens in EncryptionService)
+    func decryptContent(password: String) throws -> String {
+        guard isEncrypted, let data = Data(base64Encoded: content) else { return content }
+        let decryptedData = try EncryptionService.shared.decrypt(data: data, password: password)
+        let decryptedString = String(data: decryptedData, encoding: .utf8) ?? ""
+        self.content = decryptedString
+        self.isEncrypted = false
+        self.containerType = .none
+        self.modifiedDate = Date()
+        return decryptedString
+    }
+    
+    // Encrypt note with password
+    func encrypt(with password: String) throws {
+        try encryptContent(password: password)
+    }
+    
+    // Decrypt note with password
+    func decrypt(with password: String) throws {
+        _ = try decryptContent(password: password)
     }
 }
 
 @Model
-class Folder {
-    var name: String = "New Folder"
+class FSProject {
+    @Attribute(.unique) var id: UUID?
+    var name: String = "New Project"
+    var path: String = ""
     var createdDate: Date = Date()
-    @Relationship(deleteRule: .cascade) var notes: [Note]? = []
+    var isDefault: Bool = false
+    var settings: ProjectSettings?
+    @Relationship(deleteRule: .cascade) var notes: [FSNote]? = []
     
-    init(name: String = "New Folder") {
+    init(name: String = "New Project", path: String = "", isDefault: Bool = false) {
+        self.id = UUID()
         self.name = name
+        self.path = path
+        self.createdDate = Date()
+        self.isDefault = isDefault
     }
 }
 
-// MARK: - Notes Manager (replaces the Core Data version)
-class NotesManager: ObservableObject {
-    static let shared = NotesManager()
+@Model
+class ProjectSettings {
+    @Attribute(.unique) var id: UUID?
+    var sortBy: SortBy = SortBy.modificationDate
+    var sortDirection: SortDirection = SortDirection.descending
+    var showInSidebar: Bool = true
+    var isEncrypted: Bool = false
+    var gitRepository: String = ""
+    var createdDate: Date = Date()
     
-    @Published var selectedFolder: Folder?
-    @Published var showingTrash: Bool = false
+    init(sortBy: SortBy = .modificationDate, sortDirection: SortDirection = .descending) {
+        self.id = UUID()
+        self.sortBy = sortBy
+        self.sortDirection = sortDirection
+        self.createdDate = Date()
+    }
+}
+
+@Model
+class FSTag {
+    @Attribute(.unique) var id: UUID?
+    var name: String = ""
+    var fullName: String = ""
+    var parentTag: FSTag?
+    var createdDate: Date = Date()
+    @Relationship(deleteRule: .nullify) var notes: [FSNote]? = []
     
-    func createNote(in folder: Folder? = nil, with modelContext: ModelContext) -> Note {
-        let note = Note(title: "New Note", folder: folder ?? selectedFolder)
-        note.attributedContent = NSAttributedString(string: "")
+    init(name: String, parentTag: FSTag? = nil) {
+        self.id = UUID()
+        self.name = name
+        self.parentTag = parentTag
+        self.createdDate = Date()
+        self.fullName = generateFullName()
+    }
+    
+    private func generateFullName() -> String {
+        if let parent = parentTag, !parent.fullName.isEmpty {
+            return "\(parent.fullName)/\(name)"
+        }
+        return name
+    }
+    
+    func updateFullName() {
+        self.fullName = generateFullName()
+    }
+}
+
+// MARK: - Enums
+
+enum NoteContainer: Int, Codable {
+    case none = 1
+    case textBundle = 2
+    case textBundleV2 = 3
+    case encryptedTextPack = 4
+    
+    var uti: String {
+        switch self {
+        case .textBundle: return "com.apple.package"
+        case .textBundleV2: return "com.apple.package"
+        case .encryptedTextPack: return "es.fsnot.etp.package"
+        case .none: return ""
+        }
+    }
+}
+
+enum SortBy: String, Codable, CaseIterable {
+    case title = "title"
+    case creationDate = "creationDate"
+    case modificationDate = "modificationDate"
+    case pin = "pin"
+    
+    var displayName: String {
+        switch self {
+        case .title: return "Title"
+        case .creationDate: return "Creation Date"
+        case .modificationDate: return "Modification Date"
+        case .pin: return "Pin Status"
+        }
+    }
+}
+
+enum SortDirection: String, Codable, CaseIterable {
+    case ascending = "ascending"
+    case descending = "descending"
+    
+    var displayName: String {
+        switch self {
+        case .ascending: return "Ascending"
+        case .descending: return "Descending"
+        }
+    }
+}
+
+// MARK: - Notes Manager
+
+class FSNotesManager: ObservableObject {
+    static let shared = FSNotesManager()
+    
+    @Published var selectedProject: FSProject?
+    @Published var selectedTag: FSTag?
+    @Published var searchText: String = ""
+    @Published var sortBy: SortBy = .modificationDate
+    @Published var sortDirection: SortDirection = .descending
+    @Published var showPinnedOnly: Bool = false
+    
+    private init() {}
+    
+    func createNote(in project: FSProject? = nil, with modelContext: ModelContext) -> FSNote {
+        let note = FSNote(project: project ?? selectedProject)
         modelContext.insert(note)
         try? modelContext.save()
         return note
     }
     
-    // Migration helper to fix any existing notes with nil or empty titles
-    func migrateNotesIfNeeded(with modelContext: ModelContext) {
-        let descriptor = FetchDescriptor<Note>()
-        do {
-            let notes = try modelContext.fetch(descriptor)
-            var needsMigration = false
-            
-            for note in notes {
-                // Check for nil or empty titles and fix them
-                if note.title.isEmpty {
-                    note.title = "Untitled Note"
-                    note.modifiedDate = Date()
-                    needsMigration = true
-                }
-                
-                // Note: createdDate and modifiedDate are non-optional in our model
-                // so we don't need to check for nil values
-            }
-            
-            if needsMigration {
-                try modelContext.save()
-            }
-        } catch {
-            // If migration fails, set the reset flag for next launch
-            UserDefaults.standard.set(true, forKey: "NeedsDataReset")
-        }
-    }
-    
-    func createFolder(name: String, with modelContext: ModelContext) {
-        let folder = Folder(name: name)
-        modelContext.insert(folder)
+    func createProject(name: String, with modelContext: ModelContext) -> FSProject {
+        let project = FSProject(name: name)
+        modelContext.insert(project)
         try? modelContext.save()
+        return project
     }
     
-    func deleteNote(_ note: Note, with modelContext: ModelContext) {
-        note.isDeleted = true
-        note.deletedDate = Date()
+    func createTag(name: String, parentTag: FSTag? = nil, with modelContext: ModelContext) -> FSTag {
+        let tag = FSTag(name: name, parentTag: parentTag)
+        modelContext.insert(tag)
         try? modelContext.save()
-    }
-    
-    // Auto-cleanup expired notes (30 days)
-    func cleanupExpiredNotes(with modelContext: ModelContext) {
-        let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
-        let descriptor = FetchDescriptor<Note>(
-            predicate: #Predicate<Note> { note in
-                note.isDeleted == true && note.deletedDate < thirtyDaysAgo
-            }
-        )
-        
-        do {
-            let expiredNotes = try modelContext.fetch(descriptor)
-            let noteCount = expiredNotes.count
-            
-            // Only proceed if there are notes to clean up
-            if noteCount > 0 {
-                for note in expiredNotes {
-                    modelContext.delete(note)
-                }
-                
-                // Save changes with proper error handling
-                do {
-                    try modelContext.save()
-                    print("🗑️ NotesManager: Successfully cleaned up \(noteCount) expired note(s)")
-                } catch {
-                    print("❌ NotesManager: Failed to save after cleanup - \(error.localizedDescription)")
-                }
-            } else {
-                print("✅ NotesManager: No expired notes to clean up")
-            }
-        } catch {
-            print("❌ NotesManager: Failed to fetch expired notes - \(error.localizedDescription)")
-        }
+        return tag
     }
 
-    func restoreNote(_ note: Note, with modelContext: ModelContext) {
-        note.isDeleted = false
-        note.deletedDate = Date.distantPast
-        try? modelContext.save()
-    }
-
-    func permanentlyDelete(_ note: Note, with modelContext: ModelContext) {
+    func deleteNote(_ note: FSNote, with modelContext: ModelContext) {
         modelContext.delete(note)
         try? modelContext.save()
     }
     
-    // MARK: - Password Protection Methods
-    func setPassword(for note: Note, password: String, hint: String?) {
-        note.isPasswordProtected = true
-        let salt = generateSalt()
-        note.passwordSalt = salt
-        note.passwordHash = hashPassword(password, salt: salt)
-        note.passwordHint = hint ?? ""
-    }
-    
-    func removePassword(from note: Note) {
-        note.isPasswordProtected = false
-        note.passwordHash = ""
-        note.passwordSalt = ""
-        note.passwordHint = ""
-    }
-    
-    func verifyPassword(for note: Note, password: String) -> Bool {
-        guard !note.passwordHash.isEmpty,
-              !note.passwordSalt.isEmpty else { return false }
-        
-        let inputHash = hashPassword(password, salt: note.passwordSalt)
-        return secureCompare(note.passwordHash, inputHash)
-    }
-    
-    private func generateSalt() -> String {
-        let saltData = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
-        return saltData.base64EncodedString()
-    }
-    
-    private func hashPassword(_ password: String, salt: String) -> String {
-        guard let saltData = Data(base64Encoded: salt),
-              let passwordData = password.data(using: .utf8) else {
-            return ""
-        }
-        
-        // Combine password and salt
-        var combinedData = passwordData
-        combinedData.append(saltData)
-        
-        // Hash using SHA-256
-        let hashedData = SHA256.hash(data: combinedData)
-        return Data(hashedData).base64EncodedString()
-    }
-    
-    private func secureCompare(_ a: String, _ b: String) -> Bool {
-        guard a.count == b.count else { return false }
-        
-        var result: UInt8 = 0
-        for (byteA, byteB) in zip(a.utf8, b.utf8) {
-            result |= byteA ^ byteB
-        }
-        return result == 0
-    }
-    
-    func saveNote(_ note: Note, with modelContext: ModelContext) {
-        note.modifiedDate = Date()
+    func deleteProject(_ project: FSProject, with modelContext: ModelContext) {
+        modelContext.delete(project)
         try? modelContext.save()
+    }
+    
+    func deleteTag(_ tag: FSTag, with modelContext: ModelContext) {
+        modelContext.delete(tag)
+        try? modelContext.save()
+    }
+    
+    // Search functionality
+    func searchNotes(notes: [FSNote], searchText: String) -> [FSNote] {
+        guard !searchText.isEmpty else { return notes }
+        
+        let searchLower = searchText.lowercased()
+        return notes.filter { note in
+            note.title.lowercased().contains(searchLower) ||
+            note.content.lowercased().contains(searchLower) ||
+            note.preview.lowercased().contains(searchLower) ||
+            note.tags.contains { $0.lowercased().contains(searchLower) }
+        }
+    }
+    
+    // Sort functionality
+    func sortNotes(_ notes: [FSNote]) -> [FSNote] {
+        var sortedNotes = notes
+        
+        switch sortBy {
+        case .title:
+            sortedNotes.sort { $0.title < $1.title }
+        case .creationDate:
+            sortedNotes.sort { $0.createdDate < $1.createdDate }
+        case .modificationDate:
+            sortedNotes.sort { $0.modifiedDate < $1.modifiedDate }
+        case .pin:
+            sortedNotes.sort { $0.isPinned && !$1.isPinned }
+        }
+        
+        if sortDirection == .descending {
+            sortedNotes.reverse()
+        }
+        
+        return sortedNotes
+    }
+    
+    // Filter functionality
+    func filterNotes(_ notes: [FSNote]) -> [FSNote] {
+        var filteredNotes = notes
+        
+        if showPinnedOnly {
+            filteredNotes = filteredNotes.filter { $0.isPinned }
+        }
+        
+        if let selectedTag = selectedTag {
+            filteredNotes = filteredNotes.filter { note in
+                note.tags.contains(selectedTag.name) || note.tags.contains(selectedTag.fullName)
+            }
+        }
+        
+        return filteredNotes
+    }
+}
+
+// MARK: - NoteType Enum
+public enum NoteType: Int, Codable, CaseIterable, Identifiable {
+    public var id: Self { self }
+    case markdown = 0x01
+    case richText = 0x02
+    case plainText = 0x03
+    
+    public var fileExtension: String {
+        switch self {
+        case .markdown:
+            return "md"
+        case .richText:
+            return "rtf"
+        case .plainText:
+            return "txt"
+        }
     }
 }
 

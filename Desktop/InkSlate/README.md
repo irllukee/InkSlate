@@ -9,15 +9,16 @@ A minimalist, modern iOS app designed to help you organize your life with a clea
 - **Live Time & Date**: Real-time display with elegant typography
 - **Modern Aesthetics**: White background with carefully chosen fonts and spacing
 
-### 📝 **Notes**
-- **Rich Text Editing**: Full text formatting with bullet points, indentation, and styling
-- **Password Protection**: Secure your sensitive notes with optional password protection
-- **Folder Organization**: Organize notes into custom folders for better structure
-- **Search Functionality**: Find notes quickly with real-time search
-- **Trash Management**: Safely delete and restore notes with trash system
-- **Organized Storage**: All notes stored locally with SwiftData
-- **Clean Interface**: Simple, focused writing experience
+### 📝 **Notes (FSNotes-inspired)**
+- **Markdown Support**: Full markdown editing with syntax highlighting
+- **Project Organization**: Organize notes into custom projects and folders
+- **Tag System**: Hierarchical tagging system for better organization
+- **Search & Filter**: Powerful search across titles, content, and tags
+- **Pin Important Notes**: Pin frequently used notes for quick access
+- **Rich Text Preview**: Live preview of note content and formatting
 - **CloudKit Sync**: Automatic synchronization across all your Apple devices
+- **Sorting Options**: Sort by title, creation date, modification date, or pin status
+- **Modern UI**: Clean, intuitive interface inspired by FSNotes
 
 ### 💭 **Quotes**
 - **Inspiration Collection**: Save and organize meaningful quotes
@@ -157,7 +158,7 @@ InkSlate/
 │   └── TodoModels.swift
 ├── Views/                  # SwiftUI views
 │   ├── Items/             # Homescreen
-│   ├── Notes/             # Notes feature
+│   ├── Notes/             # Notes feature (FSNotes-inspired)
 │   ├── Quotes/             # Quotes collection
 │   ├── Recipes/           # Recipe management
 │   ├── Places/            # Location tracking

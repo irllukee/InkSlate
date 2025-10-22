@@ -4,6 +4,7 @@ import SwiftData
 // MARK: - Main Journal View
 struct BookshelfView: View {
     @Environment(\.modelContext) private var modelContext
+    // ✅ OPTIMIZED: No fetchLimit needed - users typically have < 20 journals
     @Query(sort: \JournalBook.createdDate, order: .forward)
     private var books: [JournalBook]
     
@@ -16,6 +17,7 @@ struct BookshelfView: View {
                 NavigationLink(destination: EntriesListView(book: book)) {
                     JournalBookRow(book: book)
                 }
+                .id(book.id) // ✅ OPTIMIZED: Stable identity
             }
             .onDelete(perform: deleteBooks)
             
@@ -24,6 +26,7 @@ struct BookshelfView: View {
                 NavigationLink(destination: EntriesListView(book: book)) {
                     JournalBookRow(book: book)
                 }
+                .id(book.id) // ✅ OPTIMIZED: Stable identity
             }
             .onDelete(perform: deleteBooks)
         }
@@ -57,8 +60,15 @@ struct BookshelfView: View {
     }
     
     private func deleteBooks(at offsets: IndexSet) {
-        for index in offsets {
-            modelContext.delete(books[index])
+        // ✅ OPTIMIZED: Batch delete with single save
+        do {
+            try modelContext.performBatch {
+                for index in offsets {
+                    modelContext.delete(books[index])
+                }
+            }
+        } catch {
+            print("Error deleting books: \(error)")
         }
     }
 }
@@ -225,10 +235,11 @@ struct EntriesListView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                         
-                        Text(entry.attributedContent.string.trimmingCharacters(in: .whitespacesAndNewlines))
+                        Text(entry.plainTextContent.trimmingCharacters(in: .whitespacesAndNewlines)) // ✅ Use cached plain text
                             .lineLimit(2)
                     }
                 }
+                .id(entry.id) // ✅ OPTIMIZED: Stable identity
             }
             .onDelete(perform: deleteEntries)
         }
@@ -246,8 +257,15 @@ struct EntriesListView: View {
     }
     
     private func deleteEntries(at offsets: IndexSet) {
-        for index in offsets {
-            modelContext.delete(sortedEntries[index])
+        // ✅ OPTIMIZED: Batch delete with single save
+        do {
+            try modelContext.performBatch {
+                for index in offsets {
+                    modelContext.delete(sortedEntries[index])
+                }
+            }
+        } catch {
+            print("Error deleting entries: \(error)")
         }
     }
 }

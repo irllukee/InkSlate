@@ -9,6 +9,15 @@ import Foundation
 import EventKit
 import SwiftUI
 
+// ✅ OPTIMIZED: Static cached formatters for calendar
+struct CalendarFormatters {
+    static let hourFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h a"
+        return formatter
+    }()
+}
+
 // MARK: - Calendar Manager
 class CalendarManager: ObservableObject {
     @Published var selectedDate: Date = Date()
@@ -145,7 +154,8 @@ class CalendarManager: ObservableObject {
         return events.filter { event in
             guard !event.isAllDay else { return false }
             
-            let eventStart = event.startDate ?? Date()
+            // ✅ OPTIMIZED: Proper nil handling instead of fallback
+            guard let eventStart = event.startDate else { return false }
             
             // Only return events that START in this hour slot
             // This prevents multi-hour events from appearing in multiple hour blocks
@@ -175,41 +185,6 @@ class CalendarManager: ObservableObject {
         }
         print("Default Calendar: \(store.defaultCalendarForNewEvents?.title ?? "None")")
         print("========================")
-    }
-}
-
-// MARK: - Time Slot Model
-struct TimeSlot {
-    let hour: Int
-    let date: Date
-    
-    var displayTime: String {
-        let calendar = Calendar.current
-        let startOfDay = calendar.startOfDay(for: date)
-        guard let hourDate = calendar.date(byAdding: .hour, value: hour, to: startOfDay) else {
-            return "\(hour):00"
-        }
-        
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h a"
-        return formatter.string(from: hourDate)
-    }
-    
-    var isCurrentHour: Bool {
-        let calendar = Calendar.current
-        let now = Date()
-        
-        let currentHour = calendar.component(.hour, from: now)
-        let currentDay = calendar.startOfDay(for: now)
-        let slotDay = calendar.startOfDay(for: date)
-        
-        return currentHour == hour && currentDay == slotDay
-    }
-    
-    var timeDate: Date {
-        let calendar = Calendar.current
-        let startOfDay = calendar.startOfDay(for: date)
-        return calendar.date(byAdding: .hour, value: hour, to: startOfDay) ?? date
     }
 }
 

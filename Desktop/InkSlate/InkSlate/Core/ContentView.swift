@@ -62,7 +62,7 @@ struct MainContentView: View {
             case .items:
                 ItemsListView()
             case .notes:
-                NotesListView()
+                FSNotesListView()
             case .mindMaps:
                 MindMapListView()
             case .journal:

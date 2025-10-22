@@ -13,11 +13,12 @@ import Combine
 class SharedStateManager: ObservableObject {
     static let shared = SharedStateManager()
     
-    // Shared managers
-    @Published var loadingManager = LoadingStateManager()
-    @Published var autoSaveManager = AutoSaveManager()
+    // ✅ OPTIMIZED: Remove @Published from managers - they have their own @Published properties
+    // These don't need to trigger view updates at the SharedStateManager level
+    let loadingManager = LoadingStateManager()
+    let autoSaveManager = AutoSaveManager()
     
-    // Splash screen state
+    // ✅ Only THIS needs @Published - it controls splash screen visibility
     @Published var showSplashScreen = true
     
     

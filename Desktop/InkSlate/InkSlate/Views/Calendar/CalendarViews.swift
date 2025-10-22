@@ -3,10 +3,51 @@
 //  InkSlate
 //
 //  Created by Lucas Waldron on 9/29/25.
+//  FIXED: Event filtering, overlapping events, date handling, and various bugs
 //
 
 import SwiftUI
 import EventKit
+
+// MARK: - Time Slot Helper
+struct TimeSlot {
+    let hour: Int
+    let date: Date
+    
+    var displayTime: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h a"
+        return formatter.string(from: timeDate)
+    }
+    
+    var timeDate: Date {
+        let calendar = Calendar.current
+        var components = calendar.dateComponents([.year, .month, .day], from: date)
+        components.hour = hour
+        components.minute = 0
+        components.second = 0
+        return calendar.date(from: components) ?? date
+    }
+    
+    var isCurrentHour: Bool {
+        let calendar = Calendar.current
+        let now = Date()
+        
+        guard calendar.isDate(date, inSameDayAs: now) else { return false }
+        
+        let currentHour = calendar.component(.hour, from: now)
+        return hour == currentHour
+    }
+}
+
+// MARK: - Event Layout Helper (for overlapping events)
+struct EventLayout {
+    let event: EKEvent
+    let column: Int
+    let totalColumns: Int
+    let startOffset: CGFloat
+    let height: CGFloat
+}
 
 // MARK: - Main Calendar View
 struct CalendarMainView: View {
@@ -60,6 +101,10 @@ struct CalendarMainView: View {
                         calendarManager.deleteEvent(event)
                     }
                 )
+                .onChange(of: calendarManager.selectedDate) { oldValue, newValue in
+                    // Reload events when date changes
+                    calendarManager.loadEvents()
+                }
             } else {
                 CalendarPermissionView(
                     authorizationStatus: calendarManager.authorizationStatus,
@@ -80,9 +125,15 @@ struct CalendarMainView: View {
                 calendarManager: calendarManager
             )
             .onDisappear {
-                // Reload events when editor closes
+                // Clear selections and reload events when editor closes
+                selectedEvent = nil
+                selectedTimeSlot = nil
                 calendarManager.loadEvents()
             }
+        }
+        .onAppear {
+            // Initial load
+            calendarManager.loadEvents()
         }
     }
 }
@@ -95,17 +146,17 @@ struct CalendarHeaderView: View {
     let onToday: () -> Void
     let onMonthTap: () -> Void
     
-    private var dateFormatter: DateFormatter {
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEEE, MMM d"
         return formatter
-    }
+    }()
     
-    private var monthFormatter: DateFormatter {
+    private static let monthFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMMM"
         return formatter
-    }
+    }()
     
     private var weekDays: [String] {
         ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -113,12 +164,18 @@ struct CalendarHeaderView: View {
     
     private var weekDates: [Date] {
         let calendar = Calendar.current
-        let today = selectedDate
-        let weekday = calendar.component(.weekday, from: today)
-        let mondayOffset = weekday == 1 ? -6 : 2 - weekday // Adjust for Monday start
+        let weekday = calendar.component(.weekday, from: selectedDate)
+        
+        // Calculate offset to Monday (weekday 2)
+        // Sunday is 1, Monday is 2, etc.
+        let daysFromMonday = weekday == 1 ? -6 : 2 - weekday
+        
+        guard let monday = calendar.date(byAdding: .day, value: daysFromMonday, to: selectedDate) else {
+            return []
+        }
         
         return (0..<7).compactMap { dayOffset in
-            calendar.date(byAdding: .day, value: mondayOffset + dayOffset, to: today)
+            calendar.date(byAdding: .day, value: dayOffset, to: monday)
         }
     }
     
@@ -135,7 +192,7 @@ struct CalendarHeaderView: View {
                 Spacer()
                 
                 Button(action: onMonthTap) {
-                    Text(monthFormatter.string(from: selectedDate))
+                    Text(Self.monthFormatter.string(from: selectedDate))
                         .font(DesignSystem.Typography.title2)
                         .fontWeight(.light)
                         .foregroundColor(DesignSystem.Colors.textPrimary)
@@ -150,19 +207,19 @@ struct CalendarHeaderView: View {
             .padding(.horizontal)
             .padding(.top, 0)
             
-                // Week view with days
-                VStack(spacing: 0) {
-                    // Day labels
-                    HStack(spacing: 0) {
-                        ForEach(weekDays, id: \.self) { day in
-                            Text(day)
-                                .font(DesignSystem.Typography.caption)
-                                .fontWeight(.medium)
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
-                                .frame(maxWidth: .infinity)
-                        }
+            // Week view with days
+            VStack(spacing: 0) {
+                // Day labels
+                HStack(spacing: 0) {
+                    ForEach(weekDays, id: \.self) { day in
+                        Text(day)
+                            .font(DesignSystem.Typography.caption)
+                            .fontWeight(.medium)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                            .frame(maxWidth: .infinity)
                     }
-                    .padding(.top, 4)
+                }
+                .padding(.top, 4)
                 
                 // Date numbers
                 HStack(spacing: 0) {
@@ -204,7 +261,7 @@ struct CalendarHeaderView: View {
             
             // Selected date display and Today button
             HStack {
-                Text(dateFormatter.string(from: selectedDate))
+                Text(Self.dateFormatter.string(from: selectedDate))
                     .font(.title3)
                     .fontWeight(.semibold)
                     .foregroundColor(.primary)
@@ -232,19 +289,45 @@ struct CalendarHeaderView: View {
     }
 }
 
-// MARK: - Calendar Content View (FIXED)
+// MARK: - Calendar Content View (FIXED - proper event filtering)
 struct CalendarContentView: View {
     @ObservedObject var calendarManager: CalendarManager
     let onEventTap: (EKEvent) -> Void
     let onTimeSlotTap: (Date) -> Void
     let onEventDelete: (EKEvent) -> Void
     
+    private let calendar = Calendar.current
+    
+    // FIXED: Filter events to only show those on the selected date
     private var allDayEvents: [EKEvent] {
-        calendarManager.events.filter { $0.isAllDay }
+        calendarManager.events.filter { event in
+            guard event.isAllDay else { return false }
+            
+            // Check if event occurs on selected date
+            let startDay = calendar.startOfDay(for: event.startDate)
+            let endDay = calendar.startOfDay(for: event.endDate)
+            let selectedDay = calendar.startOfDay(for: calendarManager.selectedDate)
+            
+            // Event spans or touches this day
+            return startDay <= selectedDay && selectedDay < endDay
+        }
     }
     
+    // FIXED: Filter timed events to only show those on the selected date
     private var timedEvents: [EKEvent] {
-        calendarManager.events.filter { !$0.isAllDay }
+        calendarManager.events.filter { event in
+            guard !event.isAllDay else { return false }
+            
+            // Check if event occurs on selected date
+            return calendar.isDate(event.startDate, inSameDayAs: calendarManager.selectedDate) ||
+                   calendar.isDate(event.endDate, inSameDayAs: calendarManager.selectedDate) ||
+                   (event.startDate < calendarManager.selectedDate && event.endDate > calendarManager.selectedDate)
+        }
+    }
+    
+    // Calculate layout for overlapping events
+    private var eventLayouts: [EventLayout] {
+        calculateEventLayouts(for: timedEvents)
     }
     
     var body: some View {
@@ -287,23 +370,97 @@ struct CalendarContentView: View {
                         }
                     }
                     
-                    // Overlay all events on top
-                    ForEach(timedEvents, id: \.eventIdentifier) { event in
+                    // Overlay all events with proper layout
+                    ForEach(eventLayouts, id: \.event.eventIdentifier) { layout in
                         PositionedEventView(
-                            event: event,
+                            layout: layout,
                             date: calendarManager.selectedDate,
                             onTap: onEventTap,
-                            onDelete: onEventDelete,
-                            calendarManager: calendarManager
+                            onDelete: onEventDelete
                         )
                     }
                 }
             }
         }
     }
+    
+    // Calculate non-overlapping columns for events
+    private func calculateEventLayouts(for events: [EKEvent]) -> [EventLayout] {
+        guard !events.isEmpty else { return [] }
+        
+        // Sort events by start time
+        let sortedEvents = events.sorted { $0.startDate < $1.startDate }
+        
+        var layouts: [EventLayout] = []
+        var columns: [[EKEvent]] = []
+        
+        for event in sortedEvents {
+            // Find a column where this event doesn't overlap
+            var placedInColumn: Int?
+            
+            for (index, column) in columns.enumerated() {
+                let overlaps = column.contains { existingEvent in
+                    eventsOverlap(event, existingEvent)
+                }
+                
+                if !overlaps {
+                    placedInColumn = index
+                    break
+                }
+            }
+            
+            // If no suitable column found, create a new one
+            if placedInColumn == nil {
+                columns.append([])
+                placedInColumn = columns.count - 1
+            }
+            
+            columns[placedInColumn!].append(event)
+        }
+        
+        // Create layouts with column information
+        for (columnIndex, column) in columns.enumerated() {
+            for event in column {
+                let layout = createEventLayout(
+                    event: event,
+                    column: columnIndex,
+                    totalColumns: columns.count
+                )
+                layouts.append(layout)
+            }
+        }
+        
+        return layouts
+    }
+    
+    private func eventsOverlap(_ event1: EKEvent, _ event2: EKEvent) -> Bool {
+        return event1.startDate < event2.endDate && event2.startDate < event1.endDate
+    }
+    
+    private func createEventLayout(event: EKEvent, column: Int, totalColumns: Int) -> EventLayout {
+        let hourHeight: CGFloat = 45
+        
+        // Calculate start offset (hours and minutes from midnight)
+        let startHour = calendar.component(.hour, from: event.startDate)
+        let startMinute = calendar.component(.minute, from: event.startDate)
+        let startOffset = (CGFloat(startHour) + CGFloat(startMinute) / 60.0) * hourHeight
+        
+        // Calculate duration
+        let duration = event.endDate.timeIntervalSince(event.startDate)
+        let durationHours = duration / 3600.0
+        let height = max(CGFloat(durationHours) * hourHeight, 30)
+        
+        return EventLayout(
+            event: event,
+            column: column,
+            totalColumns: totalColumns,
+            startOffset: startOffset,
+            height: height
+        )
+    }
 }
 
-// MARK: - All Day Event Card (Horizontal Layout)
+// MARK: - All Day Event Card
 struct AllDayEventCard: View {
     let event: EKEvent
     let onTap: (EKEvent) -> Void
@@ -315,7 +472,6 @@ struct AllDayEventCard: View {
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            // Calendar color indicator
             RoundedRectangle(cornerRadius: 2)
                 .fill(eventViewModel.color)
                 .frame(width: 4)
@@ -355,7 +511,7 @@ struct AllDayEventCard: View {
     }
 }
 
-// MARK: - Time Slot Background (Clickable)
+// MARK: - Time Slot Background
 struct TimeSlotBackground: View {
     let hour: Int
     let date: Date
@@ -369,11 +525,10 @@ struct TimeSlotBackground: View {
     
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            // Time label
             VStack {
-                        Text(timeSlot.displayTime)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
+                Text(timeSlot.displayTime)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
                     .frame(width: 60, alignment: .trailing)
                 
                 if timeSlot.isCurrentHour {
@@ -386,7 +541,6 @@ struct TimeSlotBackground: View {
                 }
             }
             
-            // Clickable background
             Button(action: {
                 onTimeSlotTap(timeSlot.timeDate)
             }) {
@@ -397,81 +551,42 @@ struct TimeSlotBackground: View {
             }
             .buttonStyle(PlainButtonStyle())
         }
-            .padding(.horizontal)
-            .padding(.vertical, 2)
-            .frame(height: hourHeight)
+        .padding(.horizontal)
+        .padding(.vertical, 2)
+        .frame(height: hourHeight)
     }
 }
 
-// MARK: - Positioned Event View
+// MARK: - Positioned Event View (FIXED - handles overlapping)
 struct PositionedEventView: View {
-    let event: EKEvent
+    let layout: EventLayout
     let date: Date
     let onTap: (EKEvent) -> Void
     let onDelete: (EKEvent) -> Void
-    @ObservedObject var calendarManager: CalendarManager
     
-    private let hourHeight: CGFloat = 45
-    private let timeColumnWidth: CGFloat = 72 // 60 (time width) + 12 (spacing)
+    private let timeColumnWidth: CGFloat = 72
     private let horizontalPadding: CGFloat = 16
     
-    // Calculate which hour this event starts in
-    private var startHour: Int {
-        let calendar = Calendar.current
-        return calendar.component(.hour, from: event.startDate)
-    }
-    
-    // Calculate the minute offset within the start hour
-    private var startMinute: Int {
-        let calendar = Calendar.current
-        return calendar.component(.minute, from: event.startDate)
-    }
-    
-    // Calculate event duration in hours
-    private var durationHours: Double {
-        let duration = event.endDate.timeIntervalSince(event.startDate)
-        return duration / 3600.0 // Convert seconds to hours
-    }
-    
-    // Calculate vertical offset from top of the day
-    private var verticalOffset: CGFloat {
-        let hourOffset = CGFloat(startHour) * hourHeight
-        let minuteOffset = (CGFloat(startMinute) / 60.0) * hourHeight
-        return hourOffset + minuteOffset
-    }
-    
-    // Calculate event height
-    private var eventHeight: CGFloat {
-        max(CGFloat(durationHours) * hourHeight, 30) // Minimum height of 30
-    }
-    
     var body: some View {
-        EventCard(event: event, onTap: onTap, onDelete: onDelete)
-            .frame(height: eventHeight)
-            .offset(x: timeColumnWidth + horizontalPadding, y: verticalOffset)
-            .padding(.trailing, horizontalPadding * 2)
+        EventCard(event: layout.event, onTap: onTap, onDelete: onDelete)
+            .frame(width: calculateWidth(), height: layout.height)
+            .offset(x: calculateXOffset(), y: layout.startOffset)
+    }
+    
+    private func calculateXOffset() -> CGFloat {
+        let availableWidth = UIScreen.main.bounds.width - timeColumnWidth - (horizontalPadding * 2)
+        let columnWidth = availableWidth / CGFloat(layout.totalColumns)
+        return timeColumnWidth + horizontalPadding + (columnWidth * CGFloat(layout.column))
+    }
+    
+    private func calculateWidth() -> CGFloat {
+        let availableWidth = UIScreen.main.bounds.width - timeColumnWidth - (horizontalPadding * 2)
+        let columnWidth = availableWidth / CGFloat(layout.totalColumns)
+        return columnWidth - 4 // Small gap between columns
     }
 }
 
-// MARK: - Event Time View
-struct EventTimeView: View {
-    let startTime: Date
-    let endTime: Date
-    
-    private var formatter: DateFormatter {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        return formatter
-    }
-    
-    var body: some View {
-        Text("\(formatter.string(from: startTime)) - \(formatter.string(from: endTime))")
-            .font(.system(size: 11, weight: .medium))
-            .foregroundColor(.secondary)
-    }
-}
-
-// MARK: - Updated Event Card (Compact for multi-hour events)
+// MARK: - Event Card
 struct EventCard: View {
     let event: EKEvent
     let onTap: (EKEvent) -> Void
@@ -481,15 +596,13 @@ struct EventCard: View {
         CalendarEventViewModel(event: event)
     }
     
-    // Adjust layout based on event height
     private var isCompact: Bool {
         let duration = event.endDate.timeIntervalSince(event.startDate)
-        return duration / 3600.0 < 0.75 // Less than 45 minutes
+        return duration / 3600.0 < 0.75
     }
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            // Calendar color indicator
             RoundedRectangle(cornerRadius: 2)
                 .fill(eventViewModel.color)
                 .frame(width: 4)
@@ -532,63 +645,21 @@ struct EventCard: View {
     }
 }
 
-// MARK: - All Day Event Banner
-struct AllDayEventBanner: View {
-    let event: EKEvent
-    let onTap: (EKEvent) -> Void
-    let onDelete: (EKEvent) -> Void
+// MARK: - Event Time View
+struct EventTimeView: View {
+    let startTime: Date
+    let endTime: Date
     
-    @State private var showingDeleteAlert = false
-    
-    private var eventViewModel: CalendarEventViewModel {
-        CalendarEventViewModel(event: event)
-    }
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        return formatter
+    }()
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Vertical banner with event info
-            VStack(alignment: .center, spacing: 4) {
-                // Event title (rotated for vertical display if needed, or abbreviated)
-                Text(String(eventViewModel.title.prefix(3)))
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity)
-                
-                // Delete button
-                Button(action: {
-                    showingDeleteAlert = true
-                }) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.9))
-                        .padding(4)
-                }
-                .buttonStyle(PlainButtonStyle())
-            }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 4)
-        }
-        .frame(height: 24 * 48) // Full height for 24 hours (48px per hour)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(eventViewModel.color)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(eventViewModel.color.opacity(0.3), lineWidth: 0.5)
-        )
-        .onTapGesture {
-            onTap(event)
-        }
-        .alert("Delete Event", isPresented: $showingDeleteAlert) {
-            Button("Delete", role: .destructive) {
-                onDelete(event)
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Are you sure you want to delete '\(eventViewModel.title)'?")
-        }
+        Text("\(Self.formatter.string(from: startTime)) - \(Self.formatter.string(from: endTime))")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundColor(.secondary)
     }
 }
 
@@ -608,7 +679,7 @@ struct CalendarEventViewModel {
         if let cgColor = event.calendar.cgColor {
             return Color(cgColor)
         }
-        return .blue // Default color
+        return .blue
     }
     
     var startTime: Date {
@@ -671,7 +742,8 @@ struct MonthPickerView: View {
     @Environment(\.dismiss) private var dismiss
     
     private let calendar = Calendar.current
-    private let dateFormatter: DateFormatter = {
+    
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMMM yyyy"
         return formatter
@@ -687,13 +759,12 @@ struct MonthPickerView: View {
                 LazyVStack(spacing: 24) {
                     ForEach(months, id: \.self) { month in
                         VStack(spacing: 12) {
-                            // Month header
                             Button(action: {
                                 selectedDate = month
                                 dismiss()
                             }) {
                                 HStack {
-                                    Text(dateFormatter.string(from: month))
+                                    Text(Self.dateFormatter.string(from: month))
                                         .font(.title2)
                                         .fontWeight(.bold)
                                         .foregroundColor(.primary)
@@ -714,9 +785,7 @@ struct MonthPickerView: View {
                             }
                             .buttonStyle(PlainButtonStyle())
                             
-                            // Calendar grid
                             VStack(spacing: 8) {
-                                // Day headers
                                 HStack(spacing: 0) {
                                     ForEach(weekDays, id: \.self) { day in
                                         Text(day)
@@ -727,7 +796,6 @@ struct MonthPickerView: View {
                                     }
                                 }
                                 
-                                // Days grid
                                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 7), spacing: 4) {
                                     ForEach(daysInMonth(month), id: \.self) { date in
                                         if let date = date {
@@ -784,8 +852,6 @@ struct MonthPickerView: View {
     private var months: [Date] {
         let currentDate = Date()
         var months: [Date] = []
-        
-        // Show all 12 months of the current year
         let currentYear = calendar.component(.year, from: currentDate)
         
         for month in 1...12 {
@@ -798,28 +864,20 @@ struct MonthPickerView: View {
     }
     
     private func daysInMonth(_ month: Date) -> [Date?] {
-        let calendar = Calendar.current
         let range = calendar.range(of: .day, in: .month, for: month)!
         let firstDayOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: month))!
         let firstWeekday = calendar.component(.weekday, from: firstDayOfMonth)
         
         var days: [Date?] = []
         
-        // Add empty spaces for days before the first day of the month
         for _ in 1..<firstWeekday {
             days.append(nil)
         }
         
-        // Add all days of the month
         for day in range {
             if let date = calendar.date(byAdding: .day, value: day - 1, to: firstDayOfMonth) {
                 days.append(date)
             }
-        }
-        
-        // Fill remaining spaces to complete the grid
-        while days.count % 7 != 0 {
-            days.append(nil)
         }
         
         return days
@@ -867,18 +925,15 @@ struct CalendarToggleRow: View {
     
     var body: some View {
         HStack {
-            // Calendar color indicator
             Circle()
                 .fill(Color(calendar.cgColor))
                 .frame(width: 12, height: 12)
             
-            // Calendar name
             Text(calendar.title)
                 .foregroundColor(.primary)
             
             Spacer()
             
-            // Toggle
             Toggle("", isOn: .constant(isSelected))
                 .onChange(of: isSelected) {
                     onToggle()
@@ -920,7 +975,6 @@ struct EventEditorView: View {
                 VStack(spacing: 24) {
                     // Event Details Section
                     VStack(spacing: 16) {
-                        // Title
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Event Title")
                                 .font(.headline)
@@ -931,7 +985,6 @@ struct EventEditorView: View {
                                 .font(.body)
                         }
                         
-                        // Location
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Location")
                                 .font(.headline)
@@ -942,7 +995,6 @@ struct EventEditorView: View {
                                 .font(.body)
                         }
                         
-                        // Notes
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Notes")
                                 .font(.headline)
@@ -1068,7 +1120,6 @@ struct EventEditorView: View {
     
     private func setupInitialValues() {
         if let event = event {
-            // Editing existing event
             title = event.title ?? ""
             location = event.location ?? ""
             notes = event.notes ?? ""
@@ -1077,7 +1128,6 @@ struct EventEditorView: View {
             isAllDay = event.isAllDay
             selectedCalendar = event.calendar
         } else if let startTime = startTime {
-            // Creating new event
             title = ""
             location = ""
             notes = ""
@@ -1093,23 +1143,18 @@ struct EventEditorView: View {
         let calendar = Calendar.current
         
         if let existingEvent = event {
-            // Update existing event
             eventToSave = existingEvent
         } else {
-            // Create new event
             eventToSave = EKEvent(eventStore: calendarManager.store)
             
-            // CRITICAL FIX: Use proper calendar
             if let selected = selectedCalendar, selected.allowsContentModifications {
                 eventToSave.calendar = selected
             } else if let defaultCal = calendarManager.store.defaultCalendarForNewEvents {
                 eventToSave.calendar = defaultCal
             } else {
-                // Fallback to first writable calendar
                 if let writableCal = calendarManager.allCalendars.first(where: { $0.allowsContentModifications }) {
                     eventToSave.calendar = writableCal
                 } else {
-                    // Show error - no writable calendars available
                     print("ERROR: No writable calendars available")
                     calendarManager.debugEventSaving()
                     return
@@ -1123,14 +1168,12 @@ struct EventEditorView: View {
         eventToSave.isAllDay = isAllDay
         
         if isAllDay {
-            // For all-day events, set times to midnight
             eventToSave.startDate = calendar.startOfDay(for: startDate)
             eventToSave.endDate = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: startDate))!
         } else {
             eventToSave.startDate = startDate
             eventToSave.endDate = endDate
             
-            // Validate end date is after start date
             if endDate <= startDate {
                 eventToSave.endDate = calendar.date(byAdding: .hour, value: 1, to: startDate)!
             }
@@ -1152,4 +1195,3 @@ struct EventEditorView: View {
         dismiss()
     }
 }
-

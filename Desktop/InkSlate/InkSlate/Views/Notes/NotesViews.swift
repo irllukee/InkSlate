@@ -2,1066 +2,755 @@
 //  NotesViews.swift
 //  InkSlate
 //
-//  Created by Lucas Waldron on 9/29/25.
+//  Created by Lucas Waldron on 10/18/25
+//  Recently Deleted: soft-delete, restore, permanent delete, empty trash, 30-day auto-purge
 //
 
 import SwiftUI
 import SwiftData
+import Foundation
 import UIKit
 
-// MARK: - Notes Feature Views
-
-struct NotesListView: View {
+// MARK: - Main Notes List View
+struct FSNotesListView: View {
     @Environment(\.modelContext) private var modelContext
+    
+    // Separate queries for normal and deleted notes
     @Query(
-        filter: #Predicate<Note> { !$0.isDeleted },
-        sort: \Note.modifiedDate,
+        filter: #Predicate<FSNote> { !$0.isDeleted },
+        sort: \FSNote.modifiedDate,
         order: .reverse
-    ) private var notes: [Note]
-    @Query(sort: \Folder.createdDate, order: .forward) private var folders: [Folder]
-    @StateObject private var notesManager = NotesManager()
-    @StateObject private var searchDebouncer = SearchDebouncer(delay: 0.3)
+    ) private var normalNotes: [FSNote]
     
-    @State private var searchText = ""
-    @State private var selectedNote: Note?
-    @State private var editMode: EditMode = .inactive
-    @State private var selectedForDeletion: Set<PersistentIdentifier> = []
-    @State private var showingCreateFolder = false
-    @State private var showingFolderSheet = false
-    @State private var showingTrashSheet = false
-    @State private var showingNewNote = false
-    @State private var newNote: Note?
-    
-    private var filteredNotes: [Note] {
-        let baseFilter = notes.filter { note in
-            notesManager.selectedFolder == nil || note.folder == notesManager.selectedFolder
-        }
-        
-        if searchDebouncer.searchText.isEmpty {
-            return baseFilter
-        } else {
-            return baseFilter.filter { note in
-                note.title.localizedCaseInsensitiveContains(searchDebouncer.searchText) ||
-                note.attributedContent.string.localizedCaseInsensitiveContains(searchDebouncer.searchText)
+    @Query(
+        filter: #Predicate<FSNote> { $0.isDeleted },
+        sort: \FSNote.modifiedDate,
+        order: .reverse
+    ) private var deletedNotes: [FSNote]
+
+    @State private var searchText: String = ""
+    @State private var debouncedSearchText = ""
+    @State private var searchTimer: Timer?
+
+    @State private var showingNewNoteSheet = false
+    @State private var selectedNote: FSNote?
+
+    @State private var sortBy: SortBy = .modificationDate
+    @State private var sortDirection: SortDirection = .descending
+    @State private var showPinnedOnly = false
+
+    @State private var showingDeletedNotes = false
+    @State private var showingEmptyTrashAlert = false
+
+    @State private var showingError = false
+    @State private var errorMessage = ""
+    @State private var isLoading = false
+
+    // MARK: - Derived
+    private var filteredNotes: [FSNote] {
+        // Choose the right source based on view mode
+        var notes = showingDeletedNotes ? deletedNotes : normalNotes
+
+        // search
+        if !debouncedSearchText.isEmpty {
+            let q = debouncedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            notes = notes.filter {
+                $0.title.localizedCaseInsensitiveContains(q) ||
+                $0.content.localizedCaseInsensitiveContains(q) ||
+                $0.preview.localizedCaseInsensitiveContains(q)
             }
         }
+
+        // pinned filter only in normal view
+        if showPinnedOnly && !showingDeletedNotes {
+            notes = notes.filter { $0.isPinned }
+        }
+
+        // sort
+        switch sortBy {
+        case .modificationDate:
+            notes.sort { sortDirection == .ascending ? $0.modifiedDate < $1.modifiedDate : $0.modifiedDate > $1.modifiedDate }
+        case .creationDate:
+            notes.sort { sortDirection == .ascending ? $0.createdDate < $1.createdDate : $0.createdDate > $1.createdDate }
+        case .title:
+            notes.sort { sortDirection == .ascending ? $0.title < $1.title : $0.title > $1.title }
+        case .pin:
+            notes.sort {
+                if sortDirection == .ascending { ($0.isPinned ? 0 : 1) < ($1.isPinned ? 0 : 1) }
+                else { ($0.isPinned ? 0 : 1) > ($1.isPinned ? 0 : 1) }
+            }
+        }
+
+        return notes
     }
-    
-    private var listSelection: Binding<Set<PersistentIdentifier>> {
-        editMode == .active ? $selectedForDeletion : .constant(Set<PersistentIdentifier>())
-    }
-    
+
     var body: some View {
-        notesListContent
-            .environment(\.editMode, $editMode)
-            .searchable(text: $searchText, prompt: "Search notes")
-            .onChange(of: searchText) { _, newValue in
-                searchDebouncer.searchText = newValue
-            }
-            .navigationTitle(notesManager.selectedFolder?.name ?? "Notes")
-            .toolbar {
-                toolbarContent
-            }
-            .sheet(isPresented: $showingCreateFolder) {
-                CreateFolderView_Simple(notesManager: notesManager, modelContext: modelContext)
-            }
-            .sheet(isPresented: $showingFolderSheet) {
-                FolderManagementView_Simple(notesManager: notesManager, modelContext: modelContext)
-            }
-            .sheet(isPresented: $showingTrashSheet) {
-                TrashView_Simple(notesManager: notesManager, modelContext: modelContext)
-            }
-            .sheet(isPresented: $showingNewNote) {
-                if let note = newNote {
-                    NoteDetailView_Simple(note: note)
-                }
-            }
-            .sheet(item: $selectedNote) { note in
-                if note.isPasswordProtected {
-                    PasswordAccessView(note: note, notesManager: notesManager, showingNoteDetail: .constant(false))
-                } else {
-                    NoteDetailView_Simple(note: note)
-                }
-            }
-    }
-    
-    private var notesListContent: some View {
-        List(selection: listSelection) {
-            ForEach(filteredNotes, id: \.persistentModelID) { note in
-                NoteRowView(note: note)
-                    .contentShape(Rectangle())
-                    .tag(note.persistentModelID)
-                    .onTapGesture {
-                        if editMode == .inactive {
-                            selectedNote = note
-                        }
-                    }
-            }
-            .onDelete(perform: deleteNotes)
-        }
-        .animation(.easeInOut(duration: 0.3), value: filteredNotes.count)
-        .overlay(
-            Group {
+        NavigationStack {
+            VStack(spacing: 0) {
+                toolbarView
+
                 if filteredNotes.isEmpty {
                     emptyStateView
+                } else {
+                    notesListView
                 }
             }
-        )
-        .onAppear {
-            // Cleanup expired notes on app launch
-            notesManager.cleanupExpiredNotes(with: modelContext)
-        }
-    }
-    
-    private var emptyStateView: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "note.text")
-                .font(.system(size: 60))
-                .foregroundColor(.gray)
-            
-            Text("No Notes Yet")
-                .font(.title2)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-            
-            Text("Tap the + button to create your first note")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-        }
-    }
-    
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarLeading) {
-            folderMenu
-        }
-        
-        ToolbarItem(placement: .navigationBarTrailing) {
-            trailingToolbar
-        }
-    }
-    
-    private var folderMenu: some View {
-        Menu {
-            Button("All Notes") {
-                notesManager.selectedFolder = nil
+            .navigationTitle(showingDeletedNotes ? "Recently Deleted" : "Notes")
+            .overlay { if isLoading { loadingOverlay } }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        withAnimation(.easeInOut) { showingDeletedNotes.toggle() }
+                    } label: {
+                        Image(systemName: showingDeletedNotes ? "arrow.left" : "trash")
+                    }
+                    .accessibilityLabel(showingDeletedNotes ? "Back to Notes" : "Recently Deleted")
+                }
+
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if !showingDeletedNotes {
+                        Button {
+                            showingNewNoteSheet = true
+                        } label: { Image(systemName: "square.and.pencil") }
+                        .accessibilityLabel("New Note")
+                    }
+                }
             }
-            Divider()
-            ForEach(folders, id: \.persistentModelID) { folder in
-                FolderMenuButton(folder: folder, notesManager: notesManager, modelContext: modelContext)
+            .sheet(isPresented: $showingNewNoteSheet) { NewFSNoteView() }
+            .sheet(item: $selectedNote) { note in
+                // Never open editor for deleted notes
+                if note.isDeleted {
+                    Text("This note is in Recently Deleted.")
+                        .padding()
+                } else if note.isEncrypted {
+                    DecryptionView(note: note) { success in
+                        if success {
+                            // Open editor after decrypt
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                selectedNote = note
+                            }
+                        } else {
+                            selectedNote = nil
+                        }
+                    }
+                } else {
+                    TextEditorView(note: note)
+                }
             }
-            Divider()
-            Button("New Folder") {
-                showingCreateFolder = true
-            }
-            Button("Manage Folders") {
-                showingFolderSheet = true
-            }
-            Divider()
-            Button("Recently Deleted") {
-                showingTrashSheet = true
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "folder")
-                if let folder = notesManager.selectedFolder {
-                    Text(folder.name)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+            .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
+            .onAppear { purgeOldDeletedNotes() }
+            .onChange(of: searchText) { _, newValue in
+                searchTimer?.invalidate()
+                searchTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in
+                    debouncedSearchText = newValue
                 }
             }
         }
     }
-    
-    private var trailingToolbar: some View {
-        HStack(spacing: 16) {
-            if editMode == .active {
-                Button("Delete Selected") {
-                    deleteSelectedNotes()
+
+    // MARK: - Subviews
+
+    private var toolbarView: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                SearchBar(text: $searchText)
+
+                if !showingDeletedNotes {
+                    Button {
+                        withAnimation(.spring(response: 0.25)) { showPinnedOnly.toggle() }
+                    } label: {
+                        Image(systemName: showPinnedOnly ? "pin.fill" : "pin")
+                            .foregroundColor(showPinnedOnly ? .blue : .gray)
+                            .font(.system(size: 18))
+                            .accessibilityLabel(showPinnedOnly ? "Showing pinned only" : "Toggle pinned filter")
+                    }
                 }
-                .disabled(selectedForDeletion.isEmpty)
-            } else {
-                Button {
-                    newNote = notesManager.createNote(with: modelContext)
-                    showingNewNote = true
+
+                Menu {
+                    Menu("Sort By") {
+                        Button("Modified Date") { sortBy = .modificationDate }
+                        Button("Created Date") { sortBy = .creationDate }
+                        Button("Title") { sortBy = .title }
+                        Button("Pin") { sortBy = .pin }
+                    }
+                    Divider()
+                    Button("Ascending") { sortDirection = .ascending }
+                    Button("Descending") { sortDirection = .descending }
                 } label: {
-                    Image(systemName: "square.and.pencil")
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                        .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 18))
+                        .foregroundColor(.gray)
+                }
+            }
+            .padding(.horizontal)
+
+            if showPinnedOnly && !showingDeletedNotes {
+                HStack {
+                    Text("Showing pinned notes only")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                    Spacer()
+                }
+                .padding(.horizontal)
+            }
+        }
+        .padding(.vertical, 8)
+        .background(Color(.systemGray6))
+    }
+
+    private var emptyStateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: showingDeletedNotes ? "trash" : "note.text")
+                .font(.system(size: 48))
+                .foregroundColor(.gray)
+
+            Text(showingDeletedNotes ? "No deleted notes" : (searchText.isEmpty ? "No notes yet" : "No notes found"))
+                .font(.headline)
+                .foregroundColor(.gray)
+
+            if !showingDeletedNotes && searchText.isEmpty {
+                Text("Tap + to create your first note")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var notesListView: some View {
+        List {
+            if showingDeletedNotes {
+                Section { trashHeaderView }
+            }
+
+            ForEach(filteredNotes) { note in
+                NoteRowView(note: note) {
+                    if !showingDeletedNotes { selectedNote = note }
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    if showingDeletedNotes {
+                        Button {
+                            restoreNote(note)
+                        } label: {
+                            Label("Restore", systemImage: "arrow.uturn.backward")
+                        }
+                        .tint(.green)
+
+                        Button(role: .destructive) {
+                            permanentlyDelete(note)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    } else {
+                        Button(role: .destructive) {
+                            softDelete(note)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+
+                        Button {
+                            togglePin(note)
+                        } label: {
+                            Label(note.isPinned ? "Unpin" : "Pin",
+                                  systemImage: note.isPinned ? "pin.slash" : "pin")
+                        }
+                        .tint(.blue)
+                    }
                 }
             }
         }
+        .listStyle(.plain)
+        .animation(.default, value: filteredNotes.map(\.id))
     }
-    
-    private func deleteNotes(offsets: IndexSet) {
-        let notesToDelete = offsets.map { filteredNotes[$0] }
-        
-        // Mark for deletion IMMEDIATELY (no delay)
-        for note in notesToDelete {
-            notesManager.deleteNote(note, with: modelContext)
+
+    private var trashHeaderView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.orange)
+                Text("Notes are permanently deleted after 30 days")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+
+            Button(role: .destructive) {
+                showingEmptyTrashAlert = true
+            } label: {
+                HStack {
+                    Image(systemName: "trash.slash")
+                    Text("Empty Trash")
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.bordered)
+            .alert("Empty Trash", isPresented: $showingEmptyTrashAlert) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete All", role: .destructive) { emptyTrash() }
+            } message: {
+                Text("All notes in Recently Deleted will be permanently removed. This action cannot be undone.")
+            }
         }
-        
-        // The animation will happen automatically through SwiftUI's List updates
-        // when the @Query updates and filteredNotes changes
+        .padding(.vertical, 8)
     }
-    
-    private func deleteSelectedNotes() {
-        let notesToDelete = filteredNotes.filter { selectedForDeletion.contains($0.persistentModelID) }
-        
-        // Mark for deletion IMMEDIATELY (no delay)
-        for note in notesToDelete {
-            notesManager.deleteNote(note, with: modelContext)
+
+    private var loadingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.3).ignoresSafeArea()
+            VStack(spacing: 12) {
+                ProgressView().scaleEffect(1.2)
+                Text("Loading...").font(.subheadline)
+            }
+            .padding(24)
+            .background(Color(.systemBackground))
+            .cornerRadius(12)
         }
+    }
+
+    // MARK: - Actions (Soft delete, restore, permanent delete)
+
+    private func softDelete(_ note: FSNote) {
+        // Haptic feedback for delete action
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+
+        // Clear selection if we were editing it
+        if selectedNote?.id == note.id { selectedNote = nil }
+
+        note.isDeleted = true
+        note.deletedDate = Date()
+        note.modifiedDate = Date()
         
-        selectedForDeletion.removeAll()
-        editMode = .inactive
-        
-        // The animation will happen automatically through SwiftUI's List updates
-        // when the @Query updates and filteredNotes changes
+        // Force immediate save to trigger query refresh
+        do {
+            try modelContext.save()
+        } catch {
+            errorMessage = "Failed to delete note: \(error.localizedDescription)"
+            showingError = true
+        }
+    }
+
+    private func restoreNote(_ note: FSNote) {
+        // Haptic feedback for restore action
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
+
+        note.isDeleted = false
+        note.deletedDate = nil
+        note.modifiedDate = Date()
+
+        saveOrAlert("Failed to restore note")
+    }
+
+    private func permanentlyDelete(_ note: FSNote) {
+        // Haptic feedback for permanent delete action
+        let impactFeedback = UIImpactFeedbackGenerator(style: .heavy)
+        impactFeedback.impactOccurred()
+
+        modelContext.delete(note)
+
+        saveOrAlert("Failed to permanently delete note")
+    }
+
+    private func emptyTrash() {
+        withAnimation(.easeInOut) { isLoading = true }
+
+        for note in deletedNotes { modelContext.delete(note) }
+
+        do {
+            try modelContext.save()
+        } catch {
+            errorMessage = "Failed to empty trash: \(error.localizedDescription)"
+            showingError = true
+        }
+
+        withAnimation(.easeInOut) { isLoading = false }
+    }
+
+    private func togglePin(_ note: FSNote) {
+        // Haptic feedback for pin toggle
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+
+        note.togglePin()
+        note.modifiedDate = Date()
+
+        saveOrAlert("Failed to toggle pin")
+    }
+
+    private func purgeOldDeletedNotes() {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
+        let old = deletedNotes.filter { ($0.deletedDate ?? .distantPast) < cutoff }
+        guard !old.isEmpty else { return }
+
+        for note in old { modelContext.delete(note) }
+        _ = try? modelContext.save()
+    }
+
+    private func saveOrAlert(_ prefix: String) {
+        do {
+            try modelContext.save()
+        } catch {
+            errorMessage = "\(prefix): \(error.localizedDescription)"
+            showingError = true
+        }
     }
 }
 
 // MARK: - Note Row View
 struct NoteRowView: View {
-    let note: Note
-    @State private var showingPasswordPrompt = false
-    @State private var showingLockOptions = false
-    @State private var showingNoteDetail = false
-    @Environment(\.modelContext) private var modelContext
-    @StateObject private var notesManager = NotesManager()
-    
-    private var formattedDate: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter.string(from: note.modifiedDate)
-    }
-    
-    private var formattedDateFull: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: note.modifiedDate)
-    }
-    
+    let note: FSNote
+    let onTap: () -> Void
+
     var body: some View {
-        HStack(spacing: 12) {
-            // Main content
-            VStack(alignment: .leading, spacing: 2) {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text(note.safeTitle)
-                        .font(DesignSystem.Typography.body)
-                        .fontWeight(.medium)
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                    Text(note.title.isEmpty ? "Untitled" : note.title)
+                        .font(.headline)
+                        .foregroundColor(.primary)
                         .lineLimit(1)
-                    
+
                     Spacer()
-                    
-                    if note.isPasswordProtected {
+
+                    if note.isPinned {
+                        Image(systemName: "pin.fill")
+                            .foregroundColor(.blue)
+                            .font(.caption)
+                    }
+
+                    if note.isEncrypted {
                         Image(systemName: "lock.fill")
                             .foregroundColor(.orange)
-                            .font(.system(size: 12))
+                            .font(.caption)
                     }
                 }
-                
-                if !note.isPasswordProtected && !note.attributedContent.string.isEmpty {
-                    Text(note.attributedContent.string)
-                        .font(DesignSystem.Typography.caption)
-                        .foregroundColor(DesignSystem.Colors.textSecondary)
-                        .lineLimit(1)
-                } else if note.isPasswordProtected {
-                    Text("🔒 Password Protected")
-                        .font(DesignSystem.Typography.caption)
-                        .foregroundColor(.orange)
-                        .lineLimit(1)
+
+                if !note.preview.isEmpty {
+                    Text(note.preview)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+
+                HStack(spacing: 10) {
+                    Text(note.modifiedDate.formatted(.dateTime.day().month().year().hour().minute()))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    if !note.tags.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(note.tags.prefix(3), id: \.self) { tag in
+                                Text("#\(tag)")
+                                    .font(.caption2)
+                                    .foregroundColor(.blue)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.blue.opacity(0.1))
+                                    .cornerRadius(4)
+                            }
+                            if note.tags.count > 3 {
+                                Text("+\(note.tags.count - 3)")
+                                    .font(.caption2)
+                                    .foregroundColor(.gray)
+                            }
+                        }
+                    }
                 }
             }
-            
-            // Time and folder info
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(formattedDate)
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundColor(DesignSystem.Colors.textTertiary)
-                
-                if let folder = note.folder {
-                    Text(folder.name)
-                        .font(.system(size: 10))
-                        .foregroundColor(DesignSystem.Colors.accent)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(DesignSystem.Colors.accent.opacity(0.1))
-                        )
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Search Bar
+struct SearchBar: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundColor(.gray)
+            TextField("Search notes...", text: $text).textFieldStyle(.plain)
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
                 }
             }
         }
+        .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .padding(.horizontal, 16)
-        .onTapGesture {
-            if note.isPasswordProtected {
-                showingPasswordPrompt = true
-            } else {
-                showingNoteDetail = true
-            }
-        }
-        .onLongPressGesture {
-            showingLockOptions = true
-        }
-        .sheet(isPresented: $showingLockOptions) {
-            LockOptionsView(note: note, notesManager: notesManager)
-        }
-        .sheet(isPresented: $showingPasswordPrompt) {
-            PasswordAccessView(note: note, notesManager: notesManager, showingNoteDetail: $showingNoteDetail)
-        }
-        .sheet(isPresented: $showingNoteDetail) {
-            NoteDetailView_Simple(note: note)
-        }
+        .background(Color(.systemGray5))
+        .cornerRadius(10)
     }
 }
 
-// MARK: - Simple Placeholder Views
-struct CreateFolderView_Simple: View {
-    let notesManager: NotesManager
-    let modelContext: ModelContext
-    @Environment(\.dismiss) private var dismiss
-    @State private var folderName = ""
-    
-    var body: some View {
-        NavigationView {
-            VStack {
-                TextField("Folder Name", text: $folderName)
-                    .textFieldStyle(.roundedBorder)
-                    .padding()
-                
-                Spacer()
-            }
-            .navigationTitle("New Folder")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
-                        let folder = Folder(name: folderName)
-                        modelContext.insert(folder)
-                        try? modelContext.save()
-                        dismiss()
-                    }
-                    .disabled(folderName.isEmpty)
-                }
-            }
-        }
-    }
-}
-
-struct FolderManagementView_Simple: View {
-    let notesManager: NotesManager
-    let modelContext: ModelContext
-    @Environment(\.dismiss) private var dismiss
-    @Query private var folders: [Folder]
-    @State private var showingEditFolder: Folder?
-    
-    var body: some View {
-        NavigationView {
-            List {
-                ForEach(folders, id: \.persistentModelID) { folder in
-                    FolderManagementRow(folder: folder, modelContext: modelContext, showingEditFolder: $showingEditFolder)
-                }
-                .onDelete { indexSet in
-                    for index in indexSet {
-                        let folder = folders[index]
-                        // Move notes to "All Notes" (no folder)
-                        if let notes = folder.notes {
-                            for note in notes {
-                                note.folder = nil
-                            }
-                        }
-                        modelContext.delete(folder)
-                    }
-                    try? modelContext.save()
-                }
-            }
-            .navigationTitle("Manage Folders")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-        .sheet(item: $showingEditFolder) { folder in
-            EditFolderView(folder: folder, modelContext: modelContext)
-        }
-    }
-}
-
-struct FolderManagementRow: View {
-    let folder: Folder
-    let modelContext: ModelContext
-    @Binding var showingEditFolder: Folder?
-    @State private var showingDeleteAlert = false
-    
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(folder.name)
-                    .font(.headline)
-                
-                if let notes = folder.notes, !notes.isEmpty {
-                    Text("\(notes.count) note\(notes.count == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            
-            Spacer()
-            
-            Button("Edit") {
-                showingEditFolder = folder
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            
-            Button("Delete") {
-                showingDeleteAlert = true
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .foregroundColor(.red)
-        }
-        .alert("Delete Folder", isPresented: $showingDeleteAlert) {
-            Button("Delete", role: .destructive) {
-                deleteFolder()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Are you sure you want to delete this folder? Notes in this folder will be moved to 'All Notes'.")
-        }
-    }
-    
-    private func deleteFolder() {
-        // Move notes to "All Notes" (no folder)
-        if let notes = folder.notes {
-            for note in notes {
-                note.folder = nil
-            }
-        }
-        modelContext.delete(folder)
-        try? modelContext.save()
-    }
-}
-
-struct EditFolderView: View {
-    let folder: Folder
-    let modelContext: ModelContext
-    @Environment(\.dismiss) private var dismiss
-    @State private var folderName: String
-    
-    init(folder: Folder, modelContext: ModelContext) {
-        self.folder = folder
-        self.modelContext = modelContext
-        self._folderName = State(initialValue: folder.name)
-    }
-    
-    var body: some View {
-        NavigationView {
-            VStack {
-                TextField("Folder Name", text: $folderName)
-                    .textFieldStyle(.roundedBorder)
-                    .padding()
-                
-                Spacer()
-            }
-            .navigationTitle("Edit Folder")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        folder.name = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        try? modelContext.save()
-                        dismiss()
-                    }
-                    .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-        }
-    }
-}
-
-struct FolderMenuButton: View {
-    let folder: Folder
-    let notesManager: NotesManager
-    let modelContext: ModelContext
-    @State private var showingEditFolder: Folder?
-    @State private var showingDeleteAlert = false
-    @State private var showingContextMenu = false
-    
-    var body: some View {
-        Button(folder.name) {
-            notesManager.selectedFolder = folder
-        }
-        .onLongPressGesture {
-            showingContextMenu = true
-        }
-        .confirmationDialog("Folder Options", isPresented: $showingContextMenu) {
-            Button("Edit Folder") {
-                showingEditFolder = folder
-            }
-            
-            Button("Delete Folder", role: .destructive) {
-                showingDeleteAlert = true
-            }
-            
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Choose an action for '\(folder.name)'")
-        }
-        .sheet(item: $showingEditFolder) { folder in
-            EditFolderView(folder: folder, modelContext: modelContext)
-        }
-        .alert("Delete Folder", isPresented: $showingDeleteAlert) {
-            Button("Delete", role: .destructive) {
-                deleteFolder()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Are you sure you want to delete this folder? Notes in this folder will be moved to 'All Notes'.")
-        }
-    }
-    
-    private func deleteFolder() {
-        // Move notes to "All Notes" (no folder)
-        if let notes = folder.notes {
-            for note in notes {
-                note.folder = nil
-            }
-        }
-        modelContext.delete(folder)
-        try? modelContext.save()
-        
-        // Clear selection if this folder was selected
-        if notesManager.selectedFolder?.persistentModelID == folder.persistentModelID {
-            notesManager.selectedFolder = nil
-        }
-    }
-}
-
-struct TrashView_Simple: View {
-    let notesManager: NotesManager
-    let modelContext: ModelContext
-    @Environment(\.dismiss) private var dismiss
-    @Query(filter: #Predicate<Note> { $0.isDeleted == true }) private var deletedNotes: [Note]
-    @State private var showingRestoreAlert = false
-    @State private var noteToRestore: Note?
-    
-    var body: some View {
-        NavigationView {
-            List {
-                ForEach(deletedNotes, id: \.persistentModelID) { note in
-                    TrashNoteRowView(note: note, notesManager: notesManager)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button("Restore") {
-                                noteToRestore = note
-                                showingRestoreAlert = true
-                            }
-                            .tint(.green)
-                            
-                            Button("Delete Forever", role: .destructive) {
-                                notesManager.permanentlyDelete(note, with: modelContext)
-                            }
-                            .tint(.red)
-                        }
-                }
-                .onDelete { indexSet in
-                    for index in indexSet {
-                        notesManager.permanentlyDelete(deletedNotes[index], with: modelContext)
-                    }
-                }
-            }
-            .navigationTitle("Recently Deleted")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Empty Trash") {
-                        for note in deletedNotes {
-                            notesManager.permanentlyDelete(note, with: modelContext)
-                        }
-                    }
-                    .disabled(deletedNotes.isEmpty)
-                }
-            }
-        }
-        .alert("Restore Note", isPresented: $showingRestoreAlert) {
-            Button("Restore") {
-                if let note = noteToRestore {
-                    notesManager.restoreNote(note, with: modelContext)
-                }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Are you sure you want to restore this note?")
-        }
-    }
-}
-
-struct TrashNoteRowView: View {
-    let note: Note
-    let notesManager: NotesManager
-    
-    private var daysUntilExpiration: Int {
-        guard let expirationDate = Calendar.current.date(byAdding: .day, value: 30, to: note.deletedDate) else {
-            return 0
-        }
-        let daysLeft = Calendar.current.dateComponents([.day], from: Date(), to: expirationDate).day ?? 0
-        return max(0, daysLeft)
-    }
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(note.safeTitle)
-                    .font(.headline)
-                
-                Spacer()
-                
-                if daysUntilExpiration <= 3 {
-                    Text("Expires in \(daysUntilExpiration) day\(daysUntilExpiration == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundColor(.red)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Color.red.opacity(0.1))
-                        .cornerRadius(4)
-                } else {
-                    Text("\(daysUntilExpiration) days left")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            
-            Text("Deleted \(formatDate(note.deletedDate))")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        .padding(.vertical, 4)
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
-}
-
-// MARK: - Note Detail View with Rich Text Editor
-struct NoteDetailView_Simple: View {
-    let note: Note
-    @Environment(\.dismiss) private var dismiss
+// MARK: - Note Editor View
+struct TextEditorView: View {
+    @Bindable var note: FSNote
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var showingMarkdownPreview = false
+    @State private var showingTagEditor = false
+    @State private var showingEncryption = false
+    @State private var showingDecryption = false
+    @State private var showingExportOptions = false
+
+    @State private var showingError = false
+    @State private var errorMessage = ""
+
+    @State private var hasUnsavedChanges = false
+    @State private var autoSaveTimer: Timer?
+    @State private var isSaving = false
     
-    @State private var title: String = ""
-    @State private var attributedContent: NSAttributedString = NSAttributedString()
-    @State private var showingToolbar = true
-    
+    // Selection binding for MarkdownEditor
+    @State private var selectedRange = NSRange(location: 0, length: 0)
+    @State private var coordinatorRef: MarkdownEditor.Coordinator?
+
     var body: some View {
-        NavigationView {
+        print("🔧 TextEditorView: body called")
+        return NavigationStack {
             VStack(spacing: 0) {
-                // Title Field
-                VStack(spacing: 0) {
-                    TextField("Note Title", text: $title)
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(Color(.systemBackground))
-                    
-                    Divider()
-                        .background(Color(.separator))
-                }
+                // Toolbar at the top
+                MarkdownToolbarView(coordinator: coordinatorRef)
+                    .background(Color(.systemGray6))
+                    .padding(.vertical, 8)
                 
-                // Rich Text Editor
-                RichTextEditor(attributedText: $attributedContent)
-                    .onChange(of: attributedContent) { _, newValue in
-                        saveNote()
-                    }
+                titleSection
+                contentSection
             }
-            .navigationTitle("Edit Note")
+            .background(Color(.systemBackground))
+            .navigationTitle(note.title.isEmpty ? "Note" : note.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { saveAndDismiss() }
                 }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Button("Toggle Toolbar") {
-                            showingToolbar.toggle()
-                        }
-                        
-                        Button("Clear Formatting") {
-                            clearAllFormatting()
-                        }
-                        
-                        Button("Export as Text") {
-                            exportAsText()
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
+                ToolbarItem(placement: .primaryAction) {
+                    if isSaving {
+                        ProgressView().scaleEffect(0.8)
+                    } else if hasUnsavedChanges {
+                        Text("Unsaved").font(.caption).foregroundColor(.orange)
                     }
                 }
             }
-        }
-        .onAppear {
-            loadNote()
-        }
-        .onDisappear {
-            saveNote()
+            .toolbar {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Button {
+                        togglePin()
+                    } label: {
+                        Image(systemName: note.isPinned ? "pin.fill" : "pin")
+                            .foregroundColor(note.isPinned ? .blue : .gray)
+                    }
+
+                    Spacer()
+
+                    Button("Tags") { showingTagEditor = true }
+
+                    Spacer()
+
+                    Button {
+                        if note.isEncrypted { showingDecryption = true } else { showingEncryption = true }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: note.isEncrypted ? "lock.fill" : "lock.open")
+                            Text(note.isEncrypted ? "Decrypt" : "Encrypt")
+                        }
+                        .foregroundColor(note.isEncrypted ? .orange : .blue)
+                    }
+
+                    Spacer()
+
+                    Button { showingExportOptions = true } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingTagEditor) { 
+                Text("Tag Editor - Coming Soon")
+                    .padding()
+            }
+            .sheet(isPresented: $showingEncryption) {
+                EncryptionView(note: note) { success in if success { saveNote() } }
+            }
+            .sheet(isPresented: $showingDecryption) {
+                DecryptionView(note: note) { success in if success { saveNote() } }
+            }
+            .sheet(isPresented: $showingExportOptions) { ExportOptionsView(note: note) }
+            .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
+            .onAppear { startAutoSave() }
+            .onDisappear { stopAutoSave() }
         }
     }
-    
-    private func loadNote() {
-        title = note.title
-        attributedContent = note.attributedContent
+
+    private var titleSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Title").font(.caption).foregroundColor(.secondary)
+            TextField("Note title", text: $note.title)
+                .font(.title3)
+                .textFieldStyle(.plain)
+                .onChange(of: note.title) { _, _ in markAsChanged() }
+        }
+        .padding()
+        .background(Color(.systemGray6))
     }
-    
+
+    private var contentSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Content").font(.caption).foregroundColor(.secondary)
+                Spacer()
+                Button(showingMarkdownPreview ? "Edit" : "Preview") { showingMarkdownPreview.toggle() }
+                    .font(.caption).foregroundColor(.blue)
+            }
+            .padding(.horizontal).padding(.top, 8)
+
+            if showingMarkdownPreview {
+                ScrollView {
+                    Text(note.content)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
+            } else {
+                // Use MarkdownEditor with SwiftUI toolbar
+                MarkdownEditor(text: $note.content, selectedRange: $selectedRange, coordinatorRef: $coordinatorRef)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemBackground))
+                    .onChange(of: note.content) { _, _ in markAsChanged() }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func markAsChanged() {
+        hasUnsavedChanges = true
+        note.updatePreview()
+        scheduleAutoSave()
+    }
+
+    private func togglePin() {
+        // Haptic feedback for pin toggle
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        note.togglePin()
+        saveNote()
+    }
+
+    private func startAutoSave() { /* optional heartbeat */ }
+
+    private func stopAutoSave() {
+        autoSaveTimer?.invalidate()
+        autoSaveTimer = nil
+    }
+
+    private func scheduleAutoSave() {
+        autoSaveTimer?.invalidate()
+        autoSaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { _ in
+            if hasUnsavedChanges { saveNote() }
+        }
+    }
+
     private func saveNote() {
-        note.title = title.isEmpty ? "Untitled Note" : title
-        note.attributedContent = attributedContent
+        guard !isSaving else { return }
+        isSaving = true
         note.modifiedDate = Date()
-        
+        note.updatePreview()
         do {
             try modelContext.save()
+            hasUnsavedChanges = false
         } catch {
-            // Handle save error silently
+            errorMessage = "Failed to save: \(error.localizedDescription)"
+            showingError = true
         }
+        isSaving = false
     }
-    
-    private func clearAllFormatting() {
-        let plainText = attributedContent.string
-        attributedContent = NSAttributedString(string: plainText)
-    }
-    
-    private func exportAsText() {
-        let plainText = attributedContent.string
-        UIPasteboard.general.string = plainText
-    }
-}
 
-// MARK: - Lock Options View
-struct LockOptionsView: View {
-    let note: Note
-    let notesManager: NotesManager
-    @Environment(\.dismiss) var dismiss
-    @Environment(\.modelContext) private var modelContext
-    @State private var showingPasswordPrompt = false
-    @State private var showingRemovePasswordPrompt = false
-    
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 24) {
-                VStack(spacing: 16) {
-                    Image(systemName: note.isPasswordProtected ? "lock.fill" : "lock.open")
-                        .font(.system(size: 60))
-                        .foregroundColor(note.isPasswordProtected ? .orange : .gray)
-                    
-                    Text(note.isPasswordProtected ? "Note is Locked" : "Note is Unlocked")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                    
-                    Text(note.isPasswordProtected ? 
-                         "This note is protected with a password" : 
-                         "This note is not password protected")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                
-                VStack(spacing: 12) {
-                    if note.isPasswordProtected {
-                        Button("Change Password") {
-                            showingPasswordPrompt = true
-                        }
-                        .buttonStyle(.borderedProminent)
-                        
-                        Button("Remove Password", role: .destructive) {
-                            showingRemovePasswordPrompt = true
-                        }
-                        .buttonStyle(.bordered)
-                    } else {
-                        Button("Set Password") {
-                            showingPasswordPrompt = true
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                }
-                
-                Spacer()
-            }
-            .padding(24)
-            .navigationTitle("Note Security")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") {
-                        dismiss()
-                    }
-                }
-            }
-        }
-        .sheet(isPresented: $showingPasswordPrompt) {
-            PasswordPromptView(note: note, notesManager: notesManager, isSettingPassword: !note.isPasswordProtected)
-        }
-        .alert("Remove Password", isPresented: $showingRemovePasswordPrompt) {
-            Button("Remove", role: .destructive) {
-                notesManager.removePassword(from: note)
-                notesManager.saveNote(note, with: modelContext)
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Are you sure you want to remove the password protection from this note?")
-        }
-    }
-}
-
-// MARK: - Password Access View
-struct PasswordAccessView: View {
-    let note: Note
-    let notesManager: NotesManager
-    @Binding var showingNoteDetail: Bool
-    @Environment(\.dismiss) var dismiss
-    @Environment(\.modelContext) private var modelContext
-    @State private var password = ""
-    @State private var showingError = false
-    @State private var errorMessage = ""
-    
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 24) {
-                VStack(spacing: 16) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 60))
-                        .foregroundColor(.orange)
-                    
-                    Text("Password Required")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                    
-                    Text("Enter password to access this note")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                
-                VStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Password")
-                            .font(.headline)
-                        SecureField("Enter password", text: $password)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit {
-                                verifyPassword()
-                            }
-                    }
-                    
-                    if !note.passwordHint.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Password Hint")
-                                .font(.headline)
-                            Text(note.passwordHint)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .padding()
-                                .background(Color(.systemGray6))
-                                .cornerRadius(8)
-                        }
-                    }
-                    
-                    // Warning about no password recovery
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.orange)
-                            Text("Important")
-                                .font(.headline)
-                                .foregroundColor(.orange)
-                        }
-                        
-                        Text("⚠️ There is no password recovery option. If you forget your password, this note cannot be opened.")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                            .padding()
-                            .background(Color.orange.opacity(0.1))
-                            .cornerRadius(8)
-                    }
-                }
-                
-                Spacer()
-            }
-            .padding(24)
-            .navigationTitle("Access Note")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-                
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Open") {
-                        verifyPassword()
-                    }
-                    .disabled(password.isEmpty)
-                }
-            }
-        }
-        .alert("Incorrect Password", isPresented: $showingError) {
-            Button("OK") { }
-        } message: {
-            Text(errorMessage)
-        }
-    }
-    
-    private func verifyPassword() {
-        if notesManager.verifyPassword(for: note, password: password) {
-            dismiss()
-            showingNoteDetail = true
-        } else {
-            errorMessage = "Incorrect password. Please try again."
-            showingError = true
-            password = ""
-        }
-    }
-}
-
-// MARK: - Password Prompt View
-struct PasswordPromptView: View {
-    let note: Note
-    let notesManager: NotesManager
-    let isSettingPassword: Bool
-    @Environment(\.dismiss) var dismiss
-    @Environment(\.modelContext) private var modelContext
-    @State private var password = ""
-    @State private var confirmPassword = ""
-    @State private var hint = ""
-    @State private var showingError = false
-    @State private var errorMessage = ""
-    
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 24) {
-                VStack(spacing: 16) {
-                    Image(systemName: isSettingPassword ? "lock.badge" : "lock.rotation")
-                        .font(.system(size: 50))
-                        .foregroundColor(.orange)
-                    
-                    Text(isSettingPassword ? "Set Password" : "Change Password")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                }
-                
-                VStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Password")
-                            .font(.headline)
-                        SecureField("Enter password", text: $password)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Confirm Password")
-                            .font(.headline)
-                        SecureField("Confirm password", text: $confirmPassword)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Password Hint (Optional)")
-                            .font(.headline)
-                        TextField("Enter a hint", text: $hint)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    
-                    // Warning about no password recovery
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.orange)
-                            Text("Important")
-                                .font(.headline)
-                                .foregroundColor(.orange)
-                        }
-                        
-                        Text("⚠️ There is no password recovery option. If you forget your password, this note cannot be opened.")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                            .padding()
-                            .background(Color.orange.opacity(0.1))
-                            .cornerRadius(8)
-                    }
-                }
-                
-                Spacer()
-            }
-            .padding(24)
-            .navigationTitle(isSettingPassword ? "Set Password" : "Change Password")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-                
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        savePassword()
-                    }
-                    .disabled(password.isEmpty || password != confirmPassword)
-                }
-            }
-        }
-        .alert("Error", isPresented: $showingError) {
-            Button("OK") { }
-        } message: {
-            Text(errorMessage)
-        }
-    }
-    
-    private func savePassword() {
-        guard !password.isEmpty else {
-            errorMessage = "Password cannot be empty"
-            showingError = true
-            return
-        }
-        
-        guard password == confirmPassword else {
-            errorMessage = "Passwords do not match"
-            showingError = true
-            return
-        }
-        
-        guard password.count >= 4 else {
-            errorMessage = "Password must be at least 4 characters"
-            showingError = true
-            return
-        }
-        
-        notesManager.setPassword(for: note, password: password, hint: hint.isEmpty ? nil : hint)
-        notesManager.saveNote(note, with: modelContext)
+    private func saveAndDismiss() {
+        if hasUnsavedChanges { saveNote() }
         dismiss()
     }
 }
 
+// MARK: - New Note View
+struct NewFSNoteView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var title: String = ""
+    @State private var content: String = ""
+    @State private var showingError = false
+    @State private var errorMessage = ""
+    @State private var isSaving = false
+    @State private var coordinatorRef: MarkdownEditor.Coordinator?
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                // Toolbar at the top
+                MarkdownToolbarView(coordinator: coordinatorRef)
+                    .background(Color(.systemGray6))
+                    .padding(.vertical, 8)
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Title").font(.caption).foregroundColor(.secondary)
+                    TextField("Note title", text: $title).font(.title3).textFieldStyle(.plain)
+                }
+                .padding()
+                .background(Color(.systemGray6))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Content").font(.caption).foregroundColor(.secondary)
+                        .padding(.horizontal).padding(.top, 8)
+                    MarkdownEditor(text: $content, selectedRange: .constant(NSRange(location: 0, length: 0)), coordinatorRef: $coordinatorRef)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(.systemBackground))
+                }
+
+                Spacer()
+            }
+            .navigationTitle("New Note")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { saveNote() }
+                        .disabled(isSaving || (title.isEmpty && content.isEmpty))
+                }
+            }
+            .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
+        }
+    }
+
+    private func saveNote() {
+        guard !isSaving else { return }
+        guard !title.isEmpty || !content.isEmpty else { dismiss(); return }
+
+        isSaving = true
+        let newNote = FSNote(
+            title: title.isEmpty ? "Untitled" : title,
+            content: content
+        )
+        // Ensure defaults for lifecycle
+        newNote.isDeleted = false
+        newNote.deletedDate = nil
+        newNote.createdDate = Date()
+        newNote.modifiedDate = Date()
+
+        modelContext.insert(newNote)
+
+        do {
+            try modelContext.save()
+            dismiss()
+        } catch {
+            errorMessage = "Failed to save note: \(error.localizedDescription)"
+            showingError = true
+            isSaving = false
+        }
+    }
+}

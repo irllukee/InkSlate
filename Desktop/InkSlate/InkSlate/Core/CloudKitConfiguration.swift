@@ -16,8 +16,8 @@ struct CloudKitConfig {
     static let containerIdentifier = "iCloud.com.lucas.InkSlateNew"
     
     static let schema = Schema([
-        // Notes
-        Note.self, Folder.self,
+        // Notes (FSNotes-inspired)
+        FSNote.self, FSProject.self, FSTag.self, ProjectSettings.self,
         // Journal
         JournalBook.self, JournalEntry.self, JournalPrompt.self,
         // Mind Map

@@ -10,7 +10,27 @@ class TMDBService: ObservableObject {
     private let baseURL = "https://api.themoviedb.org/3"
     private let imageBaseURL = "https://image.tmdb.org/t/p"
     
+    // ✅ OPTIMIZED: Add response caching to reduce API calls
+    private struct CachedResponse {
+        let data: TMDBResponse
+        let timestamp: Date
+    }
+    
+    private var popularMoviesCache: CachedResponse?
+    private var popularTVCache: CachedResponse?
+    private var topRatedMoviesCache: CachedResponse?
+    private var topRatedTVCache: CachedResponse?
+    private let cacheValidityDuration: TimeInterval = 3600 // 1 hour
+    
     private init() {}
+    
+    // Clear cache (can be called on app launch or settings)
+    func clearCache() {
+        popularMoviesCache = nil
+        popularTVCache = nil
+        topRatedMoviesCache = nil
+        topRatedTVCache = nil
+    }
     
     // MARK: - Search Methods
     func searchMovies(query: String, page: Int = 1) async throws -> TMDBResponse {
@@ -55,8 +75,17 @@ class TMDBService: ObservableObject {
         return try JSONDecoder().decode(TMDBResponse.self, from: data)
     }
     
-    // MARK: - Popular Content Methods
+    // MARK: - Popular Content Methods (with caching)
     func getPopularMovies(page: Int = 1) async throws -> TMDBResponse {
+        // ✅ OPTIMIZED: Check cache first (only for page 1)
+        if page == 1,
+           let cache = popularMoviesCache,
+           Date().timeIntervalSince(cache.timestamp) < cacheValidityDuration {
+            print("📦 TMDBService: Using cached popular movies")
+            return cache.data
+        }
+        
+        print("🌐 TMDBService: Fetching popular movies from API")
         let url = URL(string: "\(baseURL)/movie/popular")!
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -65,10 +94,26 @@ class TMDBService: ObservableObject {
         ]
         
         let (data, _) = try await URLSession.shared.data(from: components.url!)
-        return try JSONDecoder().decode(TMDBResponse.self, from: data)
+        let response = try JSONDecoder().decode(TMDBResponse.self, from: data)
+        
+        // ✅ Cache the response (only page 1)
+        if page == 1 {
+            popularMoviesCache = CachedResponse(data: response, timestamp: Date())
+        }
+        
+        return response
     }
     
     func getPopularTVShows(page: Int = 1) async throws -> TMDBResponse {
+        // ✅ OPTIMIZED: Check cache first (only for page 1)
+        if page == 1,
+           let cache = popularTVCache,
+           Date().timeIntervalSince(cache.timestamp) < cacheValidityDuration {
+            print("📦 TMDBService: Using cached popular TV shows")
+            return cache.data
+        }
+        
+        print("🌐 TMDBService: Fetching popular TV shows from API")
         let url = URL(string: "\(baseURL)/tv/popular")!
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -77,10 +122,26 @@ class TMDBService: ObservableObject {
         ]
         
         let (data, _) = try await URLSession.shared.data(from: components.url!)
-        return try JSONDecoder().decode(TMDBResponse.self, from: data)
+        let response = try JSONDecoder().decode(TMDBResponse.self, from: data)
+        
+        // ✅ Cache the response (only page 1)
+        if page == 1 {
+            popularTVCache = CachedResponse(data: response, timestamp: Date())
+        }
+        
+        return response
     }
     
     func getTopRatedMovies(page: Int = 1) async throws -> TMDBResponse {
+        // ✅ OPTIMIZED: Check cache first (only for page 1)
+        if page == 1,
+           let cache = topRatedMoviesCache,
+           Date().timeIntervalSince(cache.timestamp) < cacheValidityDuration {
+            print("📦 TMDBService: Using cached top rated movies")
+            return cache.data
+        }
+        
+        print("🌐 TMDBService: Fetching top rated movies from API")
         let url = URL(string: "\(baseURL)/movie/top_rated")!
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -89,10 +150,26 @@ class TMDBService: ObservableObject {
         ]
         
         let (data, _) = try await URLSession.shared.data(from: components.url!)
-        return try JSONDecoder().decode(TMDBResponse.self, from: data)
+        let response = try JSONDecoder().decode(TMDBResponse.self, from: data)
+        
+        // ✅ Cache the response (only page 1)
+        if page == 1 {
+            topRatedMoviesCache = CachedResponse(data: response, timestamp: Date())
+        }
+        
+        return response
     }
     
     func getTopRatedTVShows(page: Int = 1) async throws -> TMDBResponse {
+        // ✅ OPTIMIZED: Check cache first (only for page 1)
+        if page == 1,
+           let cache = topRatedTVCache,
+           Date().timeIntervalSince(cache.timestamp) < cacheValidityDuration {
+            print("📦 TMDBService: Using cached top rated TV shows")
+            return cache.data
+        }
+        
+        print("🌐 TMDBService: Fetching top rated TV shows from API")
         let url = URL(string: "\(baseURL)/tv/top_rated")!
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -101,7 +178,14 @@ class TMDBService: ObservableObject {
         ]
         
         let (data, _) = try await URLSession.shared.data(from: components.url!)
-        return try JSONDecoder().decode(TMDBResponse.self, from: data)
+        let response = try JSONDecoder().decode(TMDBResponse.self, from: data)
+        
+        // ✅ Cache the response (only page 1)
+        if page == 1 {
+            topRatedTVCache = CachedResponse(data: response, timestamp: Date())
+        }
+        
+        return response
     }
     
     
@@ -139,6 +223,55 @@ class TMDBService: ObservableObject {
         return URL(string: "\(imageBaseURL)/\(size)\(path)")
     }
     
+    // MARK: - Details & Credits
+    func getDetails(id: Int, mediaType: String) async throws -> TMDBItem {
+        let endpoint = mediaType == "movie" ? "movie" : "tv"
+        let url = URL(string: "\(baseURL)/\(endpoint)/\(id)")!
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey)
+        ]
+        
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        
+        // Decode the detailed response
+        let detailedItem = try JSONDecoder().decode(DetailedTMDBItem.self, from: data)
+        
+        // Convert to TMDBItem with genre names
+        return TMDBItem(
+            id: detailedItem.id,
+            title: detailedItem.title,
+            name: detailedItem.name,
+            originalTitle: detailedItem.originalTitle,
+            originalName: detailedItem.originalName,
+            overview: detailedItem.overview ?? "",
+            mediaType: mediaType,
+            posterPath: detailedItem.posterPath,
+            backdropPath: detailedItem.backdropPath,
+            releaseDate: detailedItem.releaseDate,
+            firstAirDate: detailedItem.firstAirDate,
+            voteAverage: detailedItem.voteAverage ?? 0.0,
+            voteCount: detailedItem.voteCount ?? 0,
+            runtime: detailedItem.runtime,
+            numberOfSeasons: detailedItem.numberOfSeasons,
+            numberOfEpisodes: detailedItem.numberOfEpisodes,
+            genreIds: nil,
+            genres: detailedItem.genres?.map { $0.name }
+        )
+    }
+    
+    func getCredits(id: Int, mediaType: String) async throws -> CreditsResponse {
+        let endpoint = mediaType == "movie" ? "movie" : "tv"
+        let url = URL(string: "\(baseURL)/\(endpoint)/\(id)/credits")!
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey)
+        ]
+        
+        let (data, _) = try await URLSession.shared.data(from: components.url!)
+        return try JSONDecoder().decode(CreditsResponse.self, from: data)
+    }
+    
     // MARK: - Genre Mapping
     private var movieGenres: [Int: String] = [:]
     private var tvGenres: [Int: String] = [:]
@@ -162,50 +295,41 @@ class TMDBService: ObservableObject {
     }
 }
 
-// MARK: - Image Loading Helper
-class ImageLoader: ObservableObject {
-    @Published var image: UIImage?
-    @Published var isLoading = false
+// MARK: - Detailed Response Model
+private struct DetailedTMDBItem: Codable {
+    let id: Int
+    let title: String?
+    let name: String?
+    let originalTitle: String?
+    let originalName: String?
+    let overview: String?
+    let posterPath: String?
+    let backdropPath: String?
+    let releaseDate: String?
+    let firstAirDate: String?
+    let voteAverage: Double?
+    let voteCount: Int?
+    let runtime: Int?
+    let numberOfSeasons: Int?
+    let numberOfEpisodes: Int?
+    let genres: [TMDBGenre]?
     
-    private let url: URL?
-    private var dataTask: URLSessionDataTask?
-    
-    init(url: URL?) {
-        self.url = url
-    }
-    
-    func load() {
-        guard let url = url else { return }
-        
-        // Cancel any existing task
-        dataTask?.cancel()
-        
-        isLoading = true
-        
-        dataTask = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.isLoading = false
-                
-                if let data = data, let image = UIImage(data: data) {
-                    self.image = image
-                }
-            }
-        }
-        dataTask?.resume()
-    }
-    
-    func cancel() {
-        dataTask?.cancel()
-        dataTask = nil
-        isLoading = false
-    }
-    
-    deinit {
-        dataTask?.cancel()
-        dataTask = nil
+    enum CodingKeys: String, CodingKey {
+        case id, title, name, overview, genres, runtime
+        case originalTitle = "original_title"
+        case originalName = "original_name"
+        case posterPath = "poster_path"
+        case backdropPath = "backdrop_path"
+        case releaseDate = "release_date"
+        case firstAirDate = "first_air_date"
+        case voteAverage = "vote_average"
+        case voteCount = "vote_count"
+        case numberOfSeasons = "number_of_seasons"
+        case numberOfEpisodes = "number_of_episodes"
     }
 }
+
+// ✅ OPTIMIZED: ImageLoader moved to WatchlistViews.swift with NSCache implementation
 
 
 

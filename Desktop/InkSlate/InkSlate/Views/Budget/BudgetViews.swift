@@ -184,9 +184,9 @@ struct BudgetMainView: View {
                         onItemTap: { item in
                             selectedItem = item
                         },
-                        onCreateItem: {
+                        onCreateItem: { subcategory in
                             newItem = budgetManager.createBudgetItem(
-                                name: "New Item",
+                                name: subcategory,
                                 amount: 0.0,
                                 category: category,
                                 with: modelContext
@@ -274,10 +274,11 @@ struct BudgetMainView: View {
                 .fontWeight(.medium)
                 .foregroundColor(DesignSystem.Colors.textSecondary)
             
-            Text("Tap the + button to create your first budget category")
+            Text("Tap the folder icon with plus in the top right to create your first budget category")
                 .font(DesignSystem.Typography.body)
                 .foregroundColor(DesignSystem.Colors.textTertiary)
                 .multilineTextAlignment(.center)
+                .padding(.horizontal, DesignSystem.Spacing.xl)
         }
         .padding(DesignSystem.Spacing.xxl)
     }
@@ -469,7 +470,7 @@ struct CategoryCardView: View {
     let period: Date
     let budgetManager: BudgetManager
     let onItemTap: (BudgetItem) -> Void
-    let onCreateItem: () -> Void
+    let onCreateItem: (String) -> Void
     
     @Environment(\.modelContext) private var modelContext
     @State private var budgetAmount: Double = 0.0
@@ -586,9 +587,14 @@ struct CategoryCardView: View {
                                 .font(DesignSystem.Typography.caption)
                                 .foregroundColor(DesignSystem.Colors.textTertiary)
                             
-                            Text(subcategory)
-                                .font(DesignSystem.Typography.caption)
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                            Button(action: {
+                                onCreateItem(subcategory)
+                            }) {
+                                Text(subcategory)
+                                    .font(DesignSystem.Typography.caption)
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                            }
+                            .buttonStyle(PlainButtonStyle())
                             
                             Spacer()
                             
@@ -662,7 +668,7 @@ struct CategoryCardView: View {
     
     private func formatAmount(_ amount: Double) -> String {
         if amount == 0.0 {
-            return "0.00"
+            return ""
         }
         return String(format: "%.2f", amount)
     }
@@ -699,28 +705,52 @@ struct CategoryCardView: View {
     
     
     private var balanceSummary: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Budget")
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                Text(NumberFormatter.currency.string(from: NSNumber(value: totalBudget)) ?? "$0.00")
-                    .font(DesignSystem.Typography.body)
-                    .fontWeight(.medium)
-                    .foregroundColor(DesignSystem.Colors.textPrimary)
+        VStack(spacing: DesignSystem.Spacing.sm) {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Budget")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                    Text(NumberFormatter.currency.string(from: NSNumber(value: totalBudget)) ?? "$0.00")
+                        .font(DesignSystem.Typography.body)
+                        .fontWeight(.medium)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                }
+                
+                Spacer()
+                
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("Spent")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                    Text(NumberFormatter.currency.string(from: NSNumber(value: totalSpent)) ?? "$0.00")
+                        .font(DesignSystem.Typography.body)
+                        .fontWeight(.medium)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                }
             }
             
-            Spacer()
-            
-            VStack(alignment: .trailing, spacing: 1) {
-                Text("Spent")
+            // Add visual indicator for budget status
+            HStack {
+                Image(systemName: balanceStatus.icon)
+                    .font(.system(size: 12))
+                    .foregroundColor(balanceStatus.color)
+                
+                Text(balanceStatusText)
                     .font(DesignSystem.Typography.caption)
-                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                Text(NumberFormatter.currency.string(from: NSNumber(value: totalSpent)) ?? "$0.00")
-                    .font(DesignSystem.Typography.body)
-                    .fontWeight(.medium)
-                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                    .foregroundColor(balanceStatus.color)
             }
+        }
+    }
+    
+    private var balanceStatusText: String {
+        switch balanceStatus {
+        case .underBudget:
+            return "Under budget"
+        case .closeToLimit:
+            return "Approaching limit"
+        case .overBudget:
+            return "Over budget"
         }
     }
 }
@@ -880,17 +910,29 @@ struct CreateCategoryView: View {
     @Environment(\.dismiss) private var dismiss
     
     @State private var name = ""
+    @State private var budget: Double = 0.0
     @State private var selectedIcon = "dollarsign.circle"
     @State private var selectedColor = "#8B4513"
+    @State private var showingDuplicateAlert = false
     
     let icons = ["dollarsign.circle", "house.fill", "car.fill", "cart.fill", "fork.knife", "banknote.fill", "graduationcap.fill", "cross.fill", "gift.fill", "ellipsis.circle.fill"]
     let colors = ["#8B4513", "#2196F3", "#FF9800", "#4CAF50", "#E91E63", "#9C27B0", "#3F51B5", "#F44336", "#FF5722", "#607D8B"]
+    
+    private var isDuplicateName: Bool {
+        let fetchDescriptor = FetchDescriptor<BudgetCategory>(
+            predicate: #Predicate { $0.name == name }
+        )
+        let existingCategories = (try? modelContext.fetch(fetchDescriptor)) ?? []
+        return !existingCategories.isEmpty
+    }
     
     var body: some View {
         NavigationView {
             Form {
                 Section("Category Details") {
                     TextField("Category Name", text: $name)
+                    TextField("Monthly Budget", value: $budget, format: .currency(code: "USD"))
+                        .keyboardType(.decimalPad)
                 }
                 
                 Section("Icon") {
@@ -938,11 +980,26 @@ struct CreateCategoryView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
-                        let _ = budgetManager.createCategory(name: name, icon: selectedIcon, color: selectedColor, with: modelContext)
-                        dismiss()
+                        if isDuplicateName {
+                            showingDuplicateAlert = true
+                        } else {
+                            let _ = budgetManager.createCategory(
+                                name: name,
+                                icon: selectedIcon,
+                                color: selectedColor,
+                                budget: budget,
+                                with: modelContext
+                            )
+                            dismiss()
+                        }
                     }
                     .disabled(name.isEmpty)
                 }
+            }
+            .alert("Duplicate Category", isPresented: $showingDuplicateAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("A category with this name already exists. Please choose a different name.")
             }
         }
     }
@@ -975,12 +1032,22 @@ struct CategoryManagementView: View {
                         
                         Spacer()
                         
-                        if !category.isDefault {
-                            Button("Delete") {
+                        if category.isDefault {
+                            Text("Default")
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundColor(DesignSystem.Colors.textTertiary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(DesignSystem.Colors.backgroundSecondary)
+                                .cornerRadius(4)
+                        } else {
+                            Button(action: {
                                 deleteCategory(category)
+                            }) {
+                                Label("Delete", systemImage: "trash")
+                                    .font(DesignSystem.Typography.caption)
                             }
                             .foregroundColor(.red)
-                            .font(DesignSystem.Typography.caption)
                         }
                     }
                     .padding(.vertical, 4)

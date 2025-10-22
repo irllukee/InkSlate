@@ -12,6 +12,7 @@ import SwiftData
 struct SettingsView: View {
     @State private var showingMenuReorder = false
     @State private var showingPrivacySettings = false
+    @State private var showingProfileCustomization = false
     @State private var showingFactoryResetWarning = false
     @State private var showingFactoryResetConfirmation = false
     @EnvironmentObject var shared: SharedStateManager
@@ -19,6 +20,25 @@ struct SettingsView: View {
     
     var body: some View {
         List {
+            Section("Profile & Personalization") {
+                Button(action: {
+                    showingProfileCustomization = true
+                }) {
+                    HStack {
+                        Image(systemName: "person.circle")
+                            .foregroundColor(DesignSystem.Colors.accent)
+                            .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
+                        Text("Customize Profile")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                            .font(.caption)
+                            .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
+                    }
+                }
+                .foregroundColor(.primary)
+            }
+            
             Section("Menu Customization") {
                 Button(action: {
                     showingMenuReorder = true
@@ -84,6 +104,9 @@ struct SettingsView: View {
         .sheet(isPresented: $showingPrivacySettings) {
             PrivacySettingsView()
         }
+        .sheet(isPresented: $showingProfileCustomization) {
+            ProfileCustomizationView(profileService: ProfileService())
+        }
         .alert("⚠️ Factory Reset Warning", isPresented: $showingFactoryResetWarning) {
             Button("Continue", role: .destructive) {
                 showingFactoryResetConfirmation = true
@@ -105,19 +128,6 @@ struct SettingsView: View {
     private func performFactoryReset() {
         // Delete all SwiftData models
         do {
-            // Delete all notes and folders
-            let noteDescriptor = FetchDescriptor<Note>()
-            let notes = try modelContext.fetch(noteDescriptor)
-            for note in notes {
-                modelContext.delete(note)
-            }
-            
-            let folderDescriptor = FetchDescriptor<Folder>()
-            let folders = try modelContext.fetch(folderDescriptor)
-            for folder in folders {
-                modelContext.delete(folder)
-            }
-            
             // Delete all journal books and entries
             let journalBookDescriptor = FetchDescriptor<JournalBook>()
             let journalBooks = try modelContext.fetch(journalBookDescriptor)
@@ -411,15 +421,4 @@ struct PrivacySettingsView: View {
         crashReportingEnabled = true
         dataCollectionEnabled = false
     }
-}
-
-// MARK: - Share Sheet
-struct ShareSheet: UIViewControllerRepresentable {
-    let activityItems: [Any]
-    
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-    }
-    
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

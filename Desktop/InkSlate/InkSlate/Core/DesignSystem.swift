@@ -12,32 +12,49 @@ struct DesignSystem {
     
     // MARK: - Colors
     struct Colors {
-        // Primary Colors - Minimalist
-        static let accent = Color(red: 0.2, green: 0.2, blue: 0.2) // Dark gray
-        static let accentLight = Color(red: 0.4, green: 0.4, blue: 0.4)
-        static let accentDark = Color(red: 0.1, green: 0.1, blue: 0.1)
+        // Primary Colors - Minimalist (Dark Mode Adaptive)
+        static let accent = Color(light: Color(red: 0.2, green: 0.2, blue: 0.2), 
+                                 dark: Color(red: 0.85, green: 0.85, blue: 0.85))
+        static let accentLight = Color(light: Color(red: 0.4, green: 0.4, blue: 0.4),
+                                      dark: Color(red: 0.65, green: 0.65, blue: 0.65))
+        static let accentDark = Color(light: Color(red: 0.1, green: 0.1, blue: 0.1),
+                                     dark: Color(red: 0.95, green: 0.95, blue: 0.95))
         
-        // Background Colors - Matte Paper Feel
-        static let background = Color(red: 0.98, green: 0.98, blue: 0.98) // Matte paper
-        static let backgroundSecondary = Color(red: 0.96, green: 0.96, blue: 0.96)
-        static let backgroundTertiary = Color(red: 0.94, green: 0.94, blue: 0.94)
-        static let surface = Color.white
+        // Background Colors - Matte Paper Feel (Dark Mode Adaptive)
+        static let background = Color(light: Color(red: 0.98, green: 0.98, blue: 0.98),
+                                     dark: Color(red: 0.1, green: 0.1, blue: 0.1))
+        static let backgroundSecondary = Color(light: Color(red: 0.96, green: 0.96, blue: 0.96),
+                                              dark: Color(red: 0.15, green: 0.15, blue: 0.15))
+        static let backgroundTertiary = Color(light: Color(red: 0.94, green: 0.94, blue: 0.94),
+                                             dark: Color(red: 0.2, green: 0.2, blue: 0.2))
+        static let surface = Color(light: .white,
+                                  dark: Color(red: 0.12, green: 0.12, blue: 0.12))
         
-        // Text Colors - Minimalist
-        static let textPrimary = Color(red: 0.15, green: 0.15, blue: 0.15)
-        static let textSecondary = Color(red: 0.45, green: 0.45, blue: 0.45)
-        static let textTertiary = Color(red: 0.65, green: 0.65, blue: 0.65)
-        static let textInverse = Color.white
+        // Text Colors - Minimalist (Dark Mode Adaptive)
+        static let textPrimary = Color(light: Color(red: 0.15, green: 0.15, blue: 0.15),
+                                      dark: Color(red: 0.95, green: 0.95, blue: 0.95))
+        static let textSecondary = Color(light: Color(red: 0.45, green: 0.45, blue: 0.45),
+                                        dark: Color(red: 0.65, green: 0.65, blue: 0.65))
+        static let textTertiary = Color(light: Color(red: 0.65, green: 0.65, blue: 0.65),
+                                       dark: Color(red: 0.45, green: 0.45, blue: 0.45))
+        static let textInverse = Color(light: .white,
+                                      dark: Color(red: 0.1, green: 0.1, blue: 0.1))
         
-        // Status Colors - Muted
-        static let success = Color(red: 0.3, green: 0.5, blue: 0.3)
-        static let warning = Color(red: 0.6, green: 0.5, blue: 0.3)
-        static let error = Color(red: 0.6, green: 0.4, blue: 0.4)
-        static let info = Color(red: 0.3, green: 0.4, blue: 0.5)
+        // Status Colors - Muted (Dark Mode Adaptive)
+        static let success = Color(light: Color(red: 0.3, green: 0.5, blue: 0.3),
+                                  dark: Color(red: 0.4, green: 0.7, blue: 0.4))
+        static let warning = Color(light: Color(red: 0.6, green: 0.5, blue: 0.3),
+                                  dark: Color(red: 0.8, green: 0.7, blue: 0.4))
+        static let error = Color(light: Color(red: 0.6, green: 0.4, blue: 0.4),
+                                dark: Color(red: 0.8, green: 0.5, blue: 0.5))
+        static let info = Color(light: Color(red: 0.3, green: 0.4, blue: 0.5),
+                               dark: Color(red: 0.4, green: 0.5, blue: 0.7))
         
-        // Border Colors - Subtle
-        static let border = Color(red: 0.88, green: 0.88, blue: 0.88)
-        static let borderLight = Color(red: 0.92, green: 0.92, blue: 0.92)
+        // Border Colors - Subtle (Dark Mode Adaptive)
+        static let border = Color(light: Color(red: 0.88, green: 0.88, blue: 0.88),
+                                 dark: Color(red: 0.25, green: 0.25, blue: 0.25))
+        static let borderLight = Color(light: Color(red: 0.92, green: 0.92, blue: 0.92),
+                                      dark: Color(red: 0.2, green: 0.2, blue: 0.2))
     }
     
     // MARK: - Typography - Minimalist
@@ -50,7 +67,7 @@ struct DesignSystem {
         
         // Body Text - Minimalist
         static let headline = Font.system(size: 14, weight: .medium, design: .default)
-        static let body = Font.system(size: 13, weight: .regular, design: .default)
+        static let body = Font.system(size: 15, weight: .regular, design: .default)
         static let callout = Font.system(size: 12, weight: .regular, design: .default)
         static let subheadline = Font.system(size: 11, weight: .regular, design: .default)
         static let footnote = Font.system(size: 10, weight: .regular, design: .default)
@@ -81,11 +98,14 @@ struct DesignSystem {
         static let xxl: CGFloat = 12
     }
     
-    // MARK: - Shadows - Minimalist
+    // MARK: - Shadows - Minimalist (Dark Mode Adaptive)
     struct Shadows {
-        static let small = Color.black.opacity(0.05)
-        static let medium = Color.black.opacity(0.08)
-        static let large = Color.black.opacity(0.12)
+        static let small = Color(light: Color.black.opacity(0.05), 
+                                dark: Color.black.opacity(0.3))
+        static let medium = Color(light: Color.black.opacity(0.08), 
+                                 dark: Color.black.opacity(0.4))
+        static let large = Color(light: Color.black.opacity(0.12), 
+                                dark: Color.black.opacity(0.5))
     }
 }
 

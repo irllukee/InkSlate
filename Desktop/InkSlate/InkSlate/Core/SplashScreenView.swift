@@ -47,20 +47,20 @@ struct SplashScreenView: View {
         isVisible = true
         
         // Animate in
-        withAnimation(.easeOut(duration: 0.6)) {
+        withAnimation(.easeOut(duration: 0.3)) {
             scale = 1.0
             opacity = 1.0
         }
         
         // Hold for a moment, then fade out
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            withAnimation(.easeIn(duration: 0.4)) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            withAnimation(.easeIn(duration: 0.3)) {
                 opacity = 0.0
                 scale = 1.1
             }
             
             // Complete after fade out
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 onComplete()
             }
         }

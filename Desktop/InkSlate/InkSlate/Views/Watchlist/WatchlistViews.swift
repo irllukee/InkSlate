@@ -1,6 +1,48 @@
 import SwiftUI
 import SwiftData
 
+// MARK: - Image Loader with NSCache
+class ImageLoader: ObservableObject {
+    private static let cache = NSCache<NSURL, UIImage>()
+    
+    @Published var image: UIImage?
+    private var task: URLSessionDataTask?
+    private let url: URL?
+    
+    init(url: URL?) {
+        self.url = url
+    }
+    
+    func load() {
+        guard let url = url else { return }
+        
+        if let cached = ImageLoader.cache.object(forKey: url as NSURL) {
+            self.image = cached
+            return
+        }
+        
+        task = URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+            guard let self = self,
+                  let data = data,
+                  let uiImage = UIImage(data: data) else {
+                return
+            }
+            
+            ImageLoader.cache.setObject(uiImage, forKey: url as NSURL)
+            
+            DispatchQueue.main.async {
+                self.image = uiImage
+            }
+        }
+        task?.resume()
+    }
+    
+    func cancel() {
+        task?.cancel()
+        task = nil
+    }
+}
+
 // MARK: - AsyncImage View
 struct AsyncImageLoader: View {
     let url: URL?
@@ -41,41 +83,31 @@ struct WatchlistMainView: View {
     private var watchlistItems: [WatchlistItem]
     
     @State private var searchText = ""
-    @State private var selectedMediaType: MediaType = .movies
     @State private var showingWatchlist = false
     @State private var showingFavorites = false
-    @State private var showingSearch = false
     @StateObject private var searchDebouncer = SearchDebouncer(delay: 0.5)
+    @FocusState private var isSearchFocused: Bool
     
-    
-    enum MediaType: String, CaseIterable {
-        case movies = "Movies"
-        case tv = "TV Shows"
-        
-        var apiValue: String {
-            switch self {
-            case .movies: return "movie"
-            case .tv: return "tv"
-            }
-        }
-    }
+    // Search states
+    @StateObject private var tmdbService = TMDBService.shared
+    @State private var searchResults: [TMDBItem] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var selectedItem: TMDBItem?
+    @State private var showingDetail = false
+    @State private var currentPage = 1
+    @State private var hasMorePages = false
+    @State private var searchTask: Task<Void, Never>?
     
     private var filteredWatchlist: [WatchlistItem] {
-        var items = watchlistItems
-        
-        // Apply media type filter first (more efficient)
-        items = items.filter { $0.mediaType == selectedMediaType.apiValue }
-        
-        // Apply search filter with optimized string comparison
         if !searchText.isEmpty {
             let searchLower = searchText.lowercased()
-            items = items.filter { item in
+            return watchlistItems.filter { item in
                 item.title.lowercased().contains(searchLower) ||
                 item.originalTitle.lowercased().contains(searchLower)
             }
         }
-        
-        return items
+        return watchlistItems
     }
     
     private var favoriteItems: [WatchlistItem] {
@@ -86,9 +118,12 @@ struct WatchlistMainView: View {
         Array(watchlistItems.prefix(6))
     }
     
+    private var watchlistIds: Set<Int> {
+        Set(watchlistItems.map { $0.tmdbId })
+    }
+    
     var body: some View {
         VStack(spacing: 0) {
-            // Persistent Search Bar
             VStack(spacing: 16) {
                 HStack {
                     Text("Movies & TV")
@@ -106,18 +141,26 @@ struct WatchlistMainView: View {
                     
                     TextField("Search movies and TV shows", text: $searchText)
                         .textFieldStyle(PlainTextFieldStyle())
-                        .onSubmit {
-                            if !searchText.isEmpty {
-                                showingSearch = true
-                            }
-                        }
+                        .focused($isSearchFocused)
                     
                     if !searchText.isEmpty {
-                        Button("Clear") {
+                        Button {
                             searchText = ""
+                            searchResults = []
+                            errorMessage = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.gray)
                         }
-                        .font(.caption)
-                        .foregroundColor(.blue)
+                    }
+                    
+                    if isSearchFocused {
+                        Button {
+                            isSearchFocused = false
+                        } label: {
+                            Image(systemName: "keyboard.chevron.compact.down")
+                                .foregroundColor(.blue)
+                        }
                     }
                 }
                 .padding(.horizontal, 12)
@@ -129,129 +172,209 @@ struct WatchlistMainView: View {
                     searchDebouncer.searchText = newValue
                 }
                 .onChange(of: searchDebouncer.debouncedText) { _, newValue in
-                    if !newValue.isEmpty && newValue.count >= 2 {
-                        showingSearch = true
+                    searchTask?.cancel()
+                    
+                    if newValue.isEmpty {
+                        searchResults = []
+                        errorMessage = nil
+                        currentPage = 1
+                        hasMorePages = false
+                    } else if newValue.count >= 2 {
+                        performSearch()
                     }
                 }
-                
-                // Media Type Selector
-                Picker("Media Type", selection: $selectedMediaType) {
-                    ForEach(MediaType.allCases, id: \.self) { type in
-                        Text(type.rawValue).tag(type)
-                    }
-                }
-                .pickerStyle(SegmentedPickerStyle())
-                .padding(.horizontal)
             }
             .padding(.vertical, 16)
             .background(Color(.systemBackground))
             
             ScrollView {
                 VStack(spacing: 24) {
-                // Favorites Section
-                if !favoriteItems.isEmpty {
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Text("Your Favorites")
-                                .font(.title2)
-                                .fontWeight(.bold)
-                            
-                            Spacer()
-                            
-                            Button("View All") {
-                                showingFavorites = true
+                    // Show search results when searching
+                    if !searchText.isEmpty && searchText.count >= 2 {
+                        if isLoading && searchResults.isEmpty {
+                            ProgressView("Searching...")
+                                .padding(.top, 40)
+                        } else if let error = errorMessage {
+                            VStack(spacing: 12) {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .font(.largeTitle)
+                                    .foregroundColor(.orange)
+                                Text("Search Error")
+                                    .font(.headline)
+                                Text(error)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal)
                             }
-                            .font(.subheadline)
-                            .foregroundColor(.blue)
-                        }
-                        
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 16) {
-                                ForEach(favoriteItems.prefix(10), id: \.id) { item in
-                                    FavoriteCard(item: item)
+                            .padding(.top, 40)
+                        } else if searchResults.isEmpty {
+                            VStack(spacing: 12) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.largeTitle)
+                                    .foregroundColor(.gray)
+                                Text("No Results")
+                                    .font(.headline)
+                                Text("Try searching for a different movie or TV show")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal)
+                            }
+                            .padding(.top, 40)
+                        } else {
+                            LazyVGrid(columns: [
+                                GridItem(.flexible(), spacing: 16),
+                                GridItem(.flexible(), spacing: 16)
+                            ], spacing: 20) {
+                                ForEach(searchResults, id: \.id) { item in
+                                    SearchResultCard(
+                                        item: item,
+                                        isInWatchlist: watchlistIds.contains(item.id),
+                                        onTap: {
+                                            selectedItem = item
+                                            showingDetail = true
+                                        },
+                                        onToggleWatchlist: {
+                                            toggleWatchlist(for: item)
+                                        }
+                                    )
+                                }
+                                
+                                if hasMorePages && !isLoading {
+                                    Button {
+                                        loadMoreResults()
+                                    } label: {
+                                        Text("Load More")
+                                            .fontWeight(.medium)
+                                            .frame(maxWidth: .infinity)
+                                            .padding()
+                                            .background(Color.blue)
+                                            .foregroundColor(.white)
+                                            .cornerRadius(10)
+                                    }
+                                    .gridCellColumns(2)
+                                }
+                                
+                                if isLoading && !searchResults.isEmpty {
+                                    ProgressView()
+                                        .gridCellColumns(2)
+                                        .padding()
                                 }
                             }
-                            .padding(.horizontal)
+                            .padding()
                         }
-                    }
-                }
-                
-                // Recent Additions Section
-                if !recentItems.isEmpty {
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Text("Recently Added")
-                                .font(.title2)
-                                .fontWeight(.bold)
-                            
-                            Spacer()
-                            
-                            Button("View All") {
-                                showingWatchlist = true
-                            }
-                            .font(.subheadline)
-                            .foregroundColor(.blue)
-                        }
-                        
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 16) {
-                                ForEach(recentItems, id: \.id) { item in
-                                    RecentCard(item: item)
+                    } else {
+                        // Show regular content when not searching
+                        // Favorites Section
+                        if !favoriteItems.isEmpty {
+                            VStack(alignment: .leading, spacing: 16) {
+                                HStack {
+                                    Text("Your Favorites")
+                                        .font(.title2)
+                                        .fontWeight(.bold)
+                                    
+                                    Spacer()
+                                    
+                                    Button("View All") {
+                                        showingFavorites = true
+                                    }
+                                    .font(.subheadline)
+                                    .foregroundColor(.blue)
+                                }
+                                .padding(.horizontal)
+                                
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 16) {
+                                        ForEach(favoriteItems.prefix(10), id: \.id) { item in
+                                            FavoriteCard(item: item)
+                                        }
+                                    }
+                                    .padding(.horizontal)
                                 }
                             }
+                        }
+                        
+                        // Recent Additions Section
+                        if !recentItems.isEmpty {
+                            VStack(alignment: .leading, spacing: 16) {
+                                HStack {
+                                    Text("Recently Added")
+                                        .font(.title2)
+                                        .fontWeight(.bold)
+                                    
+                                    Spacer()
+                                    
+                                    Button("View All") {
+                                        showingWatchlist = true
+                                    }
+                                    .font(.subheadline)
+                                    .foregroundColor(.blue)
+                                }
+                                .padding(.horizontal)
+                                
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 16) {
+                                        ForEach(recentItems, id: \.id) { item in
+                                            RecentCard(item: item)
+                                        }
+                                    }
+                                    .padding(.horizontal)
+                                }
+                            }
+                        }
+                        
+                        // Popular Movies Section
+                        VStack(alignment: .leading, spacing: 16) {
+                            HStack {
+                                Text("Popular Movies")
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                
+                                Spacer()
+                            }
                             .padding(.horizontal)
+                            
+                            PopularMoviesView(watchlistItems: watchlistItems)
+                        }
+                        
+                        // Popular TV Shows Section
+                        VStack(alignment: .leading, spacing: 16) {
+                            HStack {
+                                Text("Popular TV Shows")
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                
+                                Spacer()
+                            }
+                            .padding(.horizontal)
+                            
+                            PopularTVShowsView(watchlistItems: watchlistItems)
+                        }
+                        
+                        // Empty State
+                        if watchlistItems.isEmpty {
+                            VStack(spacing: 20) {
+                                Image(systemName: "tv")
+                                    .font(.system(size: 60))
+                                    .foregroundColor(.gray)
+                                
+                                Text("Start Building Your Collection")
+                                    .font(.title2)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.primary)
+                                
+                                Text("Search for movies and TV shows to add them to your watchlist")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal)
+                            }
+                            .padding(.top, 40)
                         }
                     }
                 }
-                
-                // Popular Movies Section
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        Text("Popular Movies")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                        
-                        Spacer()
-                    }
-                    
-                    PopularMoviesView(watchlistItems: watchlistItems)
-                }
-                
-                // Popular TV Shows Section
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        Text("Popular TV Shows")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                        
-                        Spacer()
-                    }
-                    
-                    PopularTVShowsView(watchlistItems: watchlistItems)
-                }
-                
-                
-                // Empty State
-                if watchlistItems.isEmpty {
-                    VStack(spacing: 20) {
-                        Image(systemName: "tv")
-                            .font(.system(size: 60))
-                            .foregroundColor(.gray)
-                        
-                        Text("Start Building Your Collection")
-                            .font(.title2)
-                            .fontWeight(.medium)
-                            .foregroundColor(.primary)
-                        
-                        Text("Search for movies and TV shows to add them to your watchlist")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top, 40)
-                }
-            }
-            .padding()
+                .padding(.vertical)
             }
         }
         .navigationTitle("Movies & TV")
@@ -287,8 +410,7 @@ struct WatchlistMainView: View {
             NavigationView {
                 WatchlistView(
                     items: filteredWatchlist,
-                    searchText: $searchText,
-                    selectedMediaType: $selectedMediaType
+                    searchText: $searchText
                 )
                 .navigationTitle("My Watchlist")
                 .navigationBarTitleDisplayMode(.inline)
@@ -318,243 +440,77 @@ struct WatchlistMainView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingSearch) {
-            NavigationView {
-                SearchView(
-                    searchText: $searchText,
-                    selectedMediaType: $selectedMediaType,
-                    watchlistItems: watchlistItems
-                )
-                .navigationTitle("Search")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Done") {
-                            showingSearch = false
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Search View
-struct SearchView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Binding var searchText: String
-    @Binding var selectedMediaType: WatchlistMainView.MediaType
-    let watchlistItems: [WatchlistItem]
-    
-    @StateObject private var tmdbService = TMDBService.shared
-    @StateObject private var searchDebouncer = SearchDebouncer(delay: 0.3)
-    @State private var searchResults: [TMDBItem] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var selectedItem: TMDBItem?
-    @State private var showingDetail = false
-    @State private var currentPage = 1
-    @State private var hasMorePages = false
-    @State private var searchTask: Task<Void, Never>?
-    
-    private var watchlistIds: Set<Int> {
-        Set(watchlistItems.map { $0.tmdbId })
-    }
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Media type filter
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(WatchlistMainView.MediaType.allCases, id: \.self) { type in
-                        Button {
-                            selectedMediaType = type
-                            // Live search will automatically trigger when searchText changes
-                            if !searchText.isEmpty {
-                                performSearch()
-                            }
-                        } label: {
-                            Text(type.rawValue)
-                                .font(.subheadline)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(selectedMediaType == type ? Color.accentColor : Color.gray.opacity(0.2))
-                                .foregroundColor(selectedMediaType == type ? .white : .primary)
-                                .cornerRadius(20)
-                        }
-                    }
-                }
-                .padding(.horizontal)
-            }
-            .padding(.vertical, 8)
-            
-            Divider()
-            
-            // Search results
-            if isLoading {
-                Spacer()
-                ProgressView("Searching...")
-                Spacer()
-            } else if errorMessage != nil {
-                Spacer()
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundColor(.orange)
-                    Text("Search Error")
-                        .font(.headline)
-                    Text(errorMessage ?? "Unknown error")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding()
-                Spacer()
-            } else if searchResults.isEmpty && !searchText.isEmpty {
-                Spacer()
-                VStack(spacing: 12) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.largeTitle)
-                        .foregroundColor(.gray)
-                    Text("No Results")
-                        .font(.headline)
-                    Text("Try searching for a different movie or TV show")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding()
-                Spacer()
-            } else if searchResults.isEmpty {
-                Spacer()
-                VStack(spacing: 12) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.largeTitle)
-                        .foregroundColor(.gray)
-                    Text("Start Searching")
-                        .font(.headline)
-                    Text("Type in the search bar to find movies and TV shows")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding()
-                Spacer()
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: [
-                        GridItem(.flexible()),
-                        GridItem(.flexible())
-                    ], spacing: 16) {
-                        ForEach(searchResults, id: \.id) { item in
-                            SearchResultCard(
-                                item: item,
-                                isInWatchlist: watchlistIds.contains(item.id),
-                                onTap: {
-                                    selectedItem = item
-                                    showingDetail = true
-                                },
-                                onToggleWatchlist: {
-                                    toggleWatchlist(for: item)
-                                }
-                            )
-                        }
-                        
-                        // Load more button
-                        if hasMorePages && !isLoading {
-                            Button("Load More") {
-                                loadMoreResults()
-                            }
-                            .padding()
-                            .frame(maxWidth: .infinity)
-                            .background(Color.blue)
-                            .foregroundColor(.white)
-                            .cornerRadius(8)
-                            .gridCellColumns(2)
-                        }
-                        
-                        if isLoading && !searchResults.isEmpty {
-                            ProgressView()
-                                .gridCellColumns(2)
-                        }
-                    }
-                    .padding()
-                }
-            }
-        }
-        .searchable(text: $searchText, prompt: "Search movies and TV shows")
-        .onChange(of: searchText) { _, newValue in
-            searchDebouncer.searchText = newValue
-        }
-        .onChange(of: searchDebouncer.debouncedText) { _, newValue in
-            // Cancel previous search task
-            searchTask?.cancel()
-            
-            if newValue.isEmpty {
-                searchResults = []
-                errorMessage = nil
-                currentPage = 1
-                hasMorePages = false
-            } else if newValue.count >= 2 {
-                // Perform search immediately since debouncing is handled
-                searchTask = Task {
-                    if !Task.isCancelled {
-                        await MainActor.run {
-                            performSearch()
-                        }
-                    }
-                }
-            }
-        }
         .sheet(isPresented: $showingDetail) {
             if let item = selectedItem {
-                SearchDetailView(item: item, isInWatchlist: watchlistIds.contains(item.id))
+                SearchDetailView(
+                    item: item,
+                    isInWatchlist: watchlistIds.contains(item.id),
+                    watchlistItems: watchlistItems
+                )
             }
         }
     }
     
+    // MARK: - Search Methods
     private func performSearch() {
-        guard !searchText.isEmpty else {
+        guard !searchText.isEmpty, searchText.count >= 2 else {
             searchResults = []
             return
         }
+        
+        searchTask?.cancel()
         
         currentPage = 1
         searchResults = []
         isLoading = true
         errorMessage = nil
         
-        Task {
+        searchTask = Task {
             do {
-                let response: TMDBResponse
+                // Small delay to avoid rapid-fire API calls
+                try await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
+                try Task.checkCancellation()
                 
-                switch selectedMediaType {
-                case .movies:
-                    response = try await tmdbService.searchMovies(query: searchText, page: currentPage)
-                case .tv:
-                    response = try await tmdbService.searchTVShows(query: searchText, page: currentPage)
+                // Search both movies and TV shows
+                let response = try await tmdbService.multiSearch(query: searchText, page: currentPage)
+                
+                try Task.checkCancellation()
+                
+                // Filter results to only include movies and TV shows (exclude people, etc.)
+                let filteredResults = response.results.filter { 
+                    $0.actualMediaType == "movie" || $0.actualMediaType == "tv" 
                 }
                 
                 await MainActor.run {
-                    searchResults = response.results
+                    searchResults = filteredResults
                     hasMorePages = response.totalPages > currentPage
+                    errorMessage = nil // Clear any previous errors
                     isLoading = false
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    isLoading = false
+                    errorMessage = nil // Don't show error for cancelled searches
                 }
             } catch {
                 await MainActor.run {
-                    if error is DecodingError {
-                        errorMessage = "Unable to decode search results. Please try again."
-                    } else if let urlError = error as? URLError {
+                    print("🔍 Search Error: \(error.localizedDescription)")
+                    if let urlError = error as? URLError {
                         switch urlError.code {
                         case .notConnectedToInternet:
-                            errorMessage = "No internet connection. Please check your network."
+                            errorMessage = "No internet connection"
                         case .timedOut:
-                            errorMessage = "Search timed out. Please try again."
+                            errorMessage = "Request timed out"
+                        case .cannotFindHost, .cannotConnectToHost:
+                            errorMessage = "Cannot connect to server"
                         default:
-                            errorMessage = "Network error. Please try again."
+                            errorMessage = "Network error: \(urlError.code.rawValue)"
                         }
+                    } else if let decodingError = error as? DecodingError {
+                        print("🔍 Decoding Error: \(decodingError)")
+                        errorMessage = "Invalid response from server"
                     } else {
-                        errorMessage = "Search failed. Please try again."
+                        errorMessage = "Search error. Please try again."
                     }
                     isLoading = false
                 }
@@ -570,23 +526,23 @@ struct SearchView: View {
         
         Task {
             do {
-                let response: TMDBResponse
+                // Search both movies and TV shows
+                let response = try await tmdbService.multiSearch(query: searchText, page: currentPage)
                 
-                switch selectedMediaType {
-                case .movies:
-                    response = try await tmdbService.searchMovies(query: searchText, page: currentPage)
-                case .tv:
-                    response = try await tmdbService.searchTVShows(query: searchText, page: currentPage)
+                // Filter results to only include movies and TV shows
+                let filteredResults = response.results.filter { 
+                    $0.actualMediaType == "movie" || $0.actualMediaType == "tv" 
                 }
                 
                 await MainActor.run {
-                    searchResults.append(contentsOf: response.results)
+                    searchResults.append(contentsOf: filteredResults)
                     hasMorePages = response.totalPages > currentPage
                     isLoading = false
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
+                    print("🔍 Load More Error: \(error.localizedDescription)")
+                    errorMessage = "Failed to load more results"
                     isLoading = false
                 }
             }
@@ -594,41 +550,38 @@ struct SearchView: View {
     }
     
     private func toggleWatchlist(for item: TMDBItem) {
-        // Perform the operation asynchronously to prevent UI hangs
-        Task { @MainActor in
-            if watchlistIds.contains(item.id) {
-                // Remove from watchlist
-                if let existingItem = watchlistItems.first(where: { $0.tmdbId == item.id }) {
-                    modelContext.delete(existingItem)
-                }
-            } else {
-                // Add to watchlist
-                let genreNames = tmdbService.getGenreNames(for: item.genreIds ?? [], mediaType: item.actualMediaType)
-                
-                let watchlistItem = WatchlistItem(
-                    tmdbId: item.id,
-                    title: item.displayTitle,
-                    originalTitle: item.originalTitle ?? item.originalName ?? item.displayTitle,
-                    overview: item.overview,
-                    mediaType: item.actualMediaType,
-                    posterPath: item.posterPath,
-                    backdropPath: item.backdropPath,
-                    releaseDate: item.releaseDate,
-                    firstAirDate: item.firstAirDate,
-                    voteAverage: item.voteAverage,
-                    voteCount: item.voteCount,
-                    runtime: item.runtime,
-                    numberOfSeasons: item.numberOfSeasons,
-                    numberOfEpisodes: item.numberOfEpisodes,
-                    genres: genreNames
-                )
-                modelContext.insert(watchlistItem)
+        if watchlistIds.contains(item.id) {
+            if let existingItem = watchlistItems.first(where: { $0.tmdbId == item.id }) {
+                modelContext.delete(existingItem)
+                try? modelContext.save()
             }
+        } else {
+            let genreNames = tmdbService.getGenreNames(for: item.genreIds ?? [], mediaType: item.actualMediaType)
+            
+            let watchlistItem = WatchlistItem(
+                tmdbId: item.id,
+                title: item.displayTitle,
+                originalTitle: item.originalTitle ?? item.originalName ?? item.displayTitle,
+                overview: item.safeOverview,
+                mediaType: item.actualMediaType,
+                posterPath: item.posterPath,
+                backdropPath: item.backdropPath,
+                releaseDate: item.releaseDate,
+                firstAirDate: item.firstAirDate,
+                voteAverage: item.safeVoteAverage,
+                voteCount: item.safeVoteCount,
+                runtime: item.runtime,
+                numberOfSeasons: item.numberOfSeasons,
+                numberOfEpisodes: item.numberOfEpisodes,
+                genres: genreNames
+            )
+            modelContext.insert(watchlistItem)
+            try? modelContext.save()
         }
     }
 }
 
-// MARK: - Search Result Card
+// MARK: - Search Result Card (Fixed sizing)
 struct SearchResultCard: View {
     let item: TMDBItem
     let isInWatchlist: Bool
@@ -637,155 +590,277 @@ struct SearchResultCard: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Poster image
-            AsyncImageLoader(
-                url: TMDBService.shared.getPosterURL(path: item.posterPath),
-                placeholder: Image(systemName: item.actualMediaType == "movie" ? "film" : "tv")
-            )
-            .aspectRatio(2/3, contentMode: .fit)
-            .frame(height: 200)
-            .clipped()
-            .cornerRadius(8)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-            )
-            .onTapGesture {
-                onTap()
+            ZStack(alignment: .topTrailing) {
+                AsyncImageLoader(
+                    url: TMDBService.shared.getPosterURL(path: item.posterPath),
+                    placeholder: Image(systemName: item.actualMediaType == "movie" ? "film" : "tv")
+                )
+                .aspectRatio(2/3, contentMode: .fill)
+                .frame(maxWidth: .infinity)
+                .frame(height: 240)
+                .clipped()
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                )
+                .onTapGesture {
+                    onTap()
+                }
+                
+                // Watchlist button overlay
+                Button {
+                    onToggleWatchlist()
+                } label: {
+                    Image(systemName: isInWatchlist ? "checkmark.circle.fill" : "plus.circle.fill")
+                        .font(.title3)
+                        .foregroundColor(isInWatchlist ? .green : .blue)
+                        .padding(8)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Circle())
+                }
+                .padding(8)
             }
             
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(item.displayTitle)
-                    .font(.headline)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
                     .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 
                 if let year = item.releaseDate?.prefix(4) ?? item.firstAirDate?.prefix(4) {
                     Text(String(year))
-                        .font(.subheadline)
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 
-                HStack {
+                HStack(spacing: 4) {
                     Image(systemName: "star.fill")
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundColor(.orange)
-                    Text(String(format: "%.1f", item.voteAverage))
+                    Text(String(format: "%.1f", item.safeVoteAverage))
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
-                    Spacer()
-                    
-                    Button {
-                        onToggleWatchlist()
-                    } label: {
-                        Image(systemName: isInWatchlist ? "checkmark.circle.fill" : "plus.circle")
-                            .foregroundColor(isInWatchlist ? .green : .blue)
-                    }
                 }
             }
         }
     }
 }
 
-// MARK: - Search Detail View
+// MARK: - Search Detail View (FIXED - Now fetches full details)
 struct SearchDetailView: View {
     let item: TMDBItem
     let isInWatchlist: Bool
+    let watchlistItems: [WatchlistItem]
+    
     @Environment(\.dismiss) var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query private var watchlistItems: [WatchlistItem]
+    @StateObject private var tmdbService = TMDBService.shared
+    
+    @State private var detailedItem: TMDBItem?
+    @State private var cast: [CastMember] = []
+    @State private var isLoading = true
+    @State private var errorMessage: String?
     
     private var watchlistIds: Set<Int> {
         Set(watchlistItems.map { $0.tmdbId })
     }
     
+    private var isFavorite: Bool {
+        watchlistItems.first(where: { $0.tmdbId == displayItem.id })?.isFavorite ?? false
+    }
+    
+    private var displayItem: TMDBItem {
+        detailedItem ?? item
+    }
+    
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // Backdrop image
-                AsyncImageLoader(
-                    url: TMDBService.shared.getBackdropURL(path: item.backdropPath),
-                    placeholder: Image(systemName: item.actualMediaType == "movie" ? "film" : "tv")
-                )
-                .frame(height: 200)
-                .clipped()
-                .cornerRadius(12)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                )
-                
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(item.displayTitle)
-                        .font(.title2)
-                        .fontWeight(.bold)
-                        .lineLimit(2)
+            if isLoading {
+                VStack {
+                    Spacer()
+                    ProgressView("Loading details...")
+                    Spacer()
+                }
+                .frame(minHeight: 400)
+            } else if let error = errorMessage {
+                VStack(spacing: 16) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundColor(.orange)
+                    Text("Failed to Load Details")
+                        .font(.headline)
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            } else {
+                VStack(alignment: .leading, spacing: 20) {
+                    AsyncImageLoader(
+                        url: TMDBService.shared.getBackdropURL(path: displayItem.backdropPath),
+                        placeholder: Image(systemName: displayItem.actualMediaType == "movie" ? "film" : "tv")
+                    )
+                    .frame(height: 220)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .cornerRadius(12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                    )
                     
-                    HStack(spacing: 8) {
-                        Image(systemName: "star.fill")
-                            .foregroundColor(.orange)
-                            .font(.caption)
-                        Text(String(format: "%.1f", item.voteAverage))
-                            .font(.subheadline)
-                        Text("•")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text("\(item.voteCount) votes")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    HStack(spacing: 12) {
-                        if let year = item.releaseDate?.prefix(4) ?? item.firstAirDate?.prefix(4) {
-                            Text(String(year))
-                                .font(.caption)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(displayItem.displayTitle)
+                            .font(.title2)
+                            .fontWeight(.bold)
+                        
+                        HStack(spacing: 8) {
+                            Image(systemName: "star.fill")
+                                .foregroundColor(.orange)
+                            Text(String(format: "%.1f", displayItem.safeVoteAverage))
+                                .fontWeight(.medium)
+                            Text("•")
+                                .foregroundColor(.secondary)
+                            Text("\(displayItem.safeVoteCount) votes")
                                 .foregroundColor(.secondary)
                         }
+                        .font(.subheadline)
                         
-                        if let runtime = item.runtime {
-                            let hours = runtime / 60
-                            let minutes = runtime % 60
-                            if hours > 0 {
-                                Text("\(hours)h \(minutes)m")
-                                    .font(.caption)
+                        HStack(spacing: 12) {
+                            if let year = displayItem.releaseDate?.prefix(4) ?? displayItem.firstAirDate?.prefix(4) {
+                                Text(String(year))
+                                    .font(.subheadline)
                                     .foregroundColor(.secondary)
-                            } else {
-                                Text("\(minutes)m")
-                                    .font(.caption)
+                            }
+                            
+                            if let runtime = displayItem.runtime, runtime > 0 {
+                                let hours = runtime / 60
+                                let minutes = runtime % 60
+                                if hours > 0 {
+                                    Text("\(hours)h \(minutes)m")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                } else {
+                                    Text("\(minutes)m")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            
+                            if let seasons = displayItem.numberOfSeasons, seasons > 0 {
+                                Text("\(seasons) Season\(seasons > 1 ? "s" : "")")
+                                    .font(.subheadline)
                                     .foregroundColor(.secondary)
                             }
                         }
+                        
+                        if let genres = displayItem.genres, !genres.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(genres, id: \.self) { genre in
+                                        Text(genre)
+                                            .font(.caption)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(Color.blue.opacity(0.1))
+                                            .foregroundColor(.blue)
+                                            .cornerRadius(16)
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
-                
-                if !item.overview.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Overview")
-                            .font(.headline)
-                        Text(item.overview)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .lineLimit(nil)
+                    
+                    if !displayItem.safeOverview.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Overview")
+                                .font(.headline)
+                            Text(displayItem.safeOverview)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                }
-                
-                // Add to Watchlist Button
-                Button {
-                    toggleWatchlist()
-                } label: {
-                    HStack {
-                        Image(systemName: isInWatchlist ? "checkmark.circle.fill" : "plus.circle.fill")
-                        Text(isInWatchlist ? "Remove from Watchlist" : "Add to Watchlist")
+                    
+                    if !cast.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Cast")
+                                .font(.headline)
+                            
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 16) {
+                                    ForEach(cast.prefix(10), id: \.id) { member in
+                                        VStack(spacing: 8) {
+                                            AsyncImageLoader(
+                                                url: TMDBService.shared.getPosterURL(path: member.profilePath),
+                                                placeholder: Image(systemName: "person.circle.fill")
+                                            )
+                                            .aspectRatio(2/3, contentMode: .fill)
+                                            .frame(width: 80, height: 120)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                                            )
+                                            
+                                            Text(member.name)
+                                                .font(.caption)
+                                                .fontWeight(.medium)
+                                                .lineLimit(2)
+                                                .multilineTextAlignment(.center)
+                                                .frame(width: 80)
+                                            
+                                            Text(member.character)
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .lineLimit(2)
+                                                .multilineTextAlignment(.center)
+                                                .frame(width: 80)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(isInWatchlist ? Color.red : Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
+                    
+                    VStack(spacing: 12) {
+                        Button {
+                            toggleWatchlist()
+                        } label: {
+                            HStack {
+                                Image(systemName: watchlistIds.contains(displayItem.id) ? "checkmark.circle.fill" : "plus.circle.fill")
+                                Text(watchlistIds.contains(displayItem.id) ? "Remove from Watchlist" : "Add to Watchlist")
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(watchlistIds.contains(displayItem.id) ? Color.red : Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
+                        
+                        Button {
+                            toggleFavorite()
+                        } label: {
+                            HStack {
+                                Image(systemName: isFavorite ? "heart.fill" : "heart")
+                                Text(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(isFavorite ? Color.pink : Color.red)
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
+                    }
+                    .padding(.top, 8)
                 }
-                .padding(.top, 8)
+                .padding()
             }
-            .padding()
         }
         .navigationTitle("Details")
         .navigationBarTitleDisplayMode(.inline)
@@ -796,36 +871,106 @@ struct SearchDetailView: View {
                 }
             }
         }
+        .onAppear {
+            loadDetails()
+        }
+    }
+    
+    private func loadDetails() {
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                let details = try await tmdbService.getDetails(id: item.id, mediaType: item.actualMediaType)
+                let credits = try await tmdbService.getCredits(id: item.id, mediaType: item.actualMediaType)
+                
+                await MainActor.run {
+                    detailedItem = details
+                    cast = credits.cast
+                    isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Could not load details"
+                    detailedItem = item
+                    isLoading = false
+                }
+            }
+        }
     }
     
     private func toggleWatchlist() {
-        if watchlistIds.contains(item.id) {
-            // Remove from watchlist
-            if let existingItem = watchlistItems.first(where: { $0.tmdbId == item.id }) {
+        if watchlistIds.contains(displayItem.id) {
+            if let existingItem = watchlistItems.first(where: { $0.tmdbId == displayItem.id }) {
                 modelContext.delete(existingItem)
+                try? modelContext.save()
+                dismiss()
             }
         } else {
-            // Add to watchlist
-            let genreNames = TMDBService.shared.getGenreNames(for: item.genreIds ?? [], mediaType: item.actualMediaType)
+            let genreNames: String
+            if let genres = displayItem.genres {
+                genreNames = genres.joined(separator: ", ")
+            } else {
+                genreNames = TMDBService.shared.getGenreNames(for: displayItem.genreIds ?? [], mediaType: displayItem.actualMediaType)
+            }
             
             let watchlistItem = WatchlistItem(
-                tmdbId: item.id,
-                title: item.displayTitle,
-                originalTitle: item.originalTitle ?? item.originalName ?? item.displayTitle,
-                overview: item.overview,
-                mediaType: item.actualMediaType,
-                posterPath: item.posterPath,
-                backdropPath: item.backdropPath,
-                releaseDate: item.releaseDate,
-                firstAirDate: item.firstAirDate,
-                voteAverage: item.voteAverage,
-                voteCount: item.voteCount,
-                runtime: item.runtime,
-                numberOfSeasons: item.numberOfSeasons,
-                numberOfEpisodes: item.numberOfEpisodes,
+                tmdbId: displayItem.id,
+                title: displayItem.displayTitle,
+                originalTitle: displayItem.originalTitle ?? displayItem.originalName ?? displayItem.displayTitle,
+                overview: displayItem.safeOverview,
+                mediaType: displayItem.actualMediaType,
+                posterPath: displayItem.posterPath,
+                backdropPath: displayItem.backdropPath,
+                releaseDate: displayItem.releaseDate,
+                firstAirDate: displayItem.firstAirDate,
+                voteAverage: displayItem.safeVoteAverage,
+                voteCount: displayItem.safeVoteCount,
+                runtime: displayItem.runtime,
+                numberOfSeasons: displayItem.numberOfSeasons,
+                numberOfEpisodes: displayItem.numberOfEpisodes,
                 genres: genreNames
             )
             modelContext.insert(watchlistItem)
+            try? modelContext.save()
+        }
+    }
+    
+    private func toggleFavorite() {
+        if let existingItem = watchlistItems.first(where: { $0.tmdbId == displayItem.id }) {
+            // Item is in watchlist, just toggle favorite
+            existingItem.isFavorite.toggle()
+            try? modelContext.save()
+        } else {
+            // Item not in watchlist, add it and mark as favorite
+            let genreNames: String
+            if let genres = displayItem.genres {
+                genreNames = genres.joined(separator: ", ")
+            } else {
+                genreNames = TMDBService.shared.getGenreNames(for: displayItem.genreIds ?? [], mediaType: displayItem.actualMediaType)
+            }
+            
+            let watchlistItem = WatchlistItem(
+                tmdbId: displayItem.id,
+                title: displayItem.displayTitle,
+                originalTitle: displayItem.originalTitle ?? displayItem.originalName ?? displayItem.displayTitle,
+                overview: displayItem.safeOverview,
+                mediaType: displayItem.actualMediaType,
+                posterPath: displayItem.posterPath,
+                backdropPath: displayItem.backdropPath,
+                releaseDate: displayItem.releaseDate,
+                firstAirDate: displayItem.firstAirDate,
+                voteAverage: displayItem.safeVoteAverage,
+                voteCount: displayItem.safeVoteCount,
+                runtime: displayItem.runtime,
+                numberOfSeasons: displayItem.numberOfSeasons,
+                numberOfEpisodes: displayItem.numberOfEpisodes,
+                genres: genreNames,
+                isFavorite: true
+            )
+            modelContext.insert(watchlistItem)
+            try? modelContext.save()
         }
     }
 }
@@ -834,7 +979,6 @@ struct SearchDetailView: View {
 struct WatchlistView: View {
     let items: [WatchlistItem]
     @Binding var searchText: String
-    @Binding var selectedMediaType: WatchlistMainView.MediaType
     
     var body: some View {
         VStack(spacing: 0) {
@@ -846,17 +990,17 @@ struct WatchlistView: View {
                         .foregroundColor(.gray)
                     Text("Your Watchlist is Empty")
                         .font(.headline)
-                    Text("Search for movies and TV shows to add them to your watchlist")
+                    Text("Search for movies and TV shows to add them")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
+                        .padding(.horizontal)
                 }
                 .padding()
                 Spacer()
             } else {
-                // Item count header
                 HStack {
-                    Text("\(items.count) items")
+                    Text("\(items.count) item\(items.count == 1 ? "" : "s")")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -873,11 +1017,9 @@ struct WatchlistView: View {
                 .listStyle(PlainListStyle())
             }
         }
-        .searchable(text: $searchText, prompt: "Search your watchlist")
     }
 }
 
-// MARK: - Watchlist Item Card
 // MARK: - Watchlist List Item
 struct WatchlistListItem: View {
     let item: WatchlistItem
@@ -886,30 +1028,24 @@ struct WatchlistListItem: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            // Poster image
             AsyncImageLoader(
                 url: TMDBService.shared.getPosterURL(path: item.posterPath),
                 placeholder: Image(systemName: item.mediaType == "movie" ? "film" : "tv")
             )
-            .aspectRatio(2/3, contentMode: .fit)
-            .frame(width: 50, height: 75)
+            .aspectRatio(2/3, contentMode: .fill)
+            .frame(width: 60, height: 90)
             .clipped()
             .cornerRadius(8)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
+                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
             )
-            .onTapGesture {
-                showingDetail = true
-            }
             
-            // Content
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(item.displayTitle)
                     .font(.subheadline)
-                    .fontWeight(.medium)
+                    .fontWeight(.semibold)
                     .lineLimit(2)
-                    .multilineTextAlignment(.leading)
                 
                 HStack {
                     if !item.releaseYear.isEmpty {
@@ -920,20 +1056,19 @@ struct WatchlistListItem: View {
                     
                     Spacer()
                     
-                    HStack(spacing: 2) {
+                    HStack(spacing: 4) {
                         Image(systemName: "star.fill")
                             .font(.caption2)
                             .foregroundColor(.orange)
                         Text(String(format: "%.1f", item.voteAverage))
-                            .font(.caption2)
+                            .font(.caption)
                             .foregroundColor(.secondary)
                     }
                 }
                 
-                // Status indicators
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     if item.isWatched {
-                        HStack(spacing: 2) {
+                        HStack(spacing: 3) {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.caption2)
                                 .foregroundColor(.green)
@@ -944,7 +1079,7 @@ struct WatchlistListItem: View {
                     }
                     
                     if item.isFavorite {
-                        HStack(spacing: 2) {
+                        HStack(spacing: 3) {
                             Image(systemName: "heart.fill")
                                 .font(.caption2)
                                 .foregroundColor(.red)
@@ -955,7 +1090,7 @@ struct WatchlistListItem: View {
                     }
                     
                     if item.personalRating > 0 {
-                        HStack(spacing: 2) {
+                        HStack(spacing: 3) {
                             Image(systemName: "star.fill")
                                 .font(.caption2)
                                 .foregroundColor(.yellow)
@@ -968,138 +1103,14 @@ struct WatchlistListItem: View {
                     Spacer()
                 }
             }
-            
-            Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.gray.opacity(0.05))
-        .cornerRadius(10)
-        .sheet(isPresented: $showingDetail) {
-            WatchlistDetailView(item: item)
-        }
-    }
-}
-
-struct WatchlistItemCard: View {
-    let item: WatchlistItem
-    @Environment(\.modelContext) private var modelContext
-    @State private var showingDetail = false
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ZStack {
-                // Poster image
-                AsyncImageLoader(
-                    url: TMDBService.shared.getPosterURL(path: item.posterPath),
-                    placeholder: Image(systemName: item.mediaType == "movie" ? "film" : "tv")
-                )
-                .aspectRatio(2/3, contentMode: .fit)
-                .frame(height: 200)
-                .clipped()
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                )
-                
-                // Watched badge
-                if item.isWatched {
-                    VStack {
-                        HStack {
-                            Spacer()
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(.green)
-                                .background(Color.white)
-                                .clipShape(Circle())
-                        }
-                        Spacer()
-                    }
-                    .padding(8)
-                }
-                
-                // Personal rating
-                if item.personalRating > 0 {
-                    VStack {
-                        HStack {
-                            Image(systemName: "star.fill")
-                                .font(.caption)
-                                .foregroundColor(.yellow)
-                            Text(String(format: "%.1f", item.personalRating))
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.white)
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.black.opacity(0.7))
-                        .cornerRadius(4)
-                        Spacer()
-                    }
-                    .padding(8)
-                }
-            }
-            .onTapGesture {
-                showingDetail = true
-            }
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.displayTitle)
-                    .font(.headline)
-                    .lineLimit(2)
-                
-                if !item.releaseYear.isEmpty {
-                    Text(item.releaseYear)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                
-                HStack {
-                    Image(systemName: "star.fill")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-                    Text(String(format: "%.1f", item.voteAverage))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
-                    Spacer()
-                    
-                    HStack(spacing: 8) {
-                        Button {
-                            toggleFavoriteStatus()
-                        } label: {
-                            Image(systemName: item.isFavorite ? "heart.fill" : "heart")
-                                .foregroundColor(item.isFavorite ? .red : .gray)
-                        }
-                        
-                        Button {
-                            toggleWatchedStatus()
-                        } label: {
-                            Image(systemName: item.isWatched ? "eye.fill" : "eye")
-                                .foregroundColor(item.isWatched ? .green : .gray)
-                        }
-                    }
-                }
-            }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            showingDetail = true
         }
         .sheet(isPresented: $showingDetail) {
             WatchlistDetailView(item: item)
         }
-    }
-    
-    private func toggleWatchedStatus() {
-        item.isWatched.toggle()
-        if item.isWatched {
-            item.watchedDate = Date()
-        } else {
-            item.watchedDate = Date.distantPast
-            item.personalRating = 0.0
-        }
-    }
-    
-    private func toggleFavoriteStatus() {
-        item.isFavorite.toggle()
     }
 }
 
@@ -1112,22 +1123,24 @@ struct WatchlistDetailView: View {
     @State private var personalRating: Double = 0
     @State private var notes: String = ""
     @State private var showingDeleteAlert = false
+    @State private var isWatched: Bool = false
+    @State private var isFavorite: Bool = false
     
     var body: some View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Backdrop image
                     AsyncImageLoader(
                         url: TMDBService.shared.getBackdropURL(path: item.backdropPath),
                         placeholder: Image(systemName: item.mediaType == "movie" ? "film" : "tv")
                     )
-                    .frame(height: 250)
+                    .frame(height: 220)
+                    .frame(maxWidth: .infinity)
                     .clipped()
                     .cornerRadius(12)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                            .stroke(Color.gray.opacity(0.2), lineWidth: 1)
                     )
                     
                     VStack(alignment: .leading, spacing: 12) {
@@ -1135,14 +1148,17 @@ struct WatchlistDetailView: View {
                             .font(.title)
                             .fontWeight(.bold)
                         
-                        HStack {
+                        HStack(spacing: 8) {
                             Image(systemName: "star.fill")
                                 .foregroundColor(.orange)
                             Text(String(format: "%.1f", item.voteAverage))
+                                .fontWeight(.medium)
                             Text("•")
+                                .foregroundColor(.secondary)
                             Text("\(item.voteCount) votes")
                                 .foregroundColor(.secondary)
                         }
+                        .font(.subheadline)
                         
                         if !item.releaseYear.isEmpty {
                             Text(item.releaseYear)
@@ -1164,69 +1180,90 @@ struct WatchlistDetailView: View {
                             Text(item.overview)
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     
-                    // Watch status
-                    Section {
-                        Toggle("Mark as Watched", isOn: .constant(item.isWatched))
-                            .disabled(true)
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Status")
+                            .font(.headline)
                         
-                        if item.isWatched, item.watchedDate != Date.distantPast {
+                        Toggle("Mark as Watched", isOn: $isWatched)
+                            .onChange(of: isWatched) { _, newValue in
+                                item.isWatched = newValue
+                                if newValue {
+                                    item.watchedDate = Date()
+                                } else {
+                                    item.watchedDate = Date.distantPast
+                                    item.personalRating = 0.0
+                                    personalRating = 0.0
+                                }
+                                try? modelContext.save()
+                            }
+                        
+                        Toggle("Favorite", isOn: $isFavorite)
+                            .onChange(of: isFavorite) { _, newValue in
+                                item.isFavorite = newValue
+                                try? modelContext.save()
+                            }
+                        
+                        if isWatched && item.watchedDate != Date.distantPast {
                             HStack {
                                 Image(systemName: "calendar")
-                                Text("Watched: \(item.watchedDate, style: .date)")
+                                Text("Watched on \(item.watchedDate, style: .date)")
                                     .foregroundColor(.secondary)
                             }
                             .font(.subheadline)
                         }
-                    } header: {
-                        Text("Watch Status")
-                            .font(.headline)
                     }
                     
-                    // Personal rating
-                    if item.isWatched {
-                        Section {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("Your Rating")
-                                    Spacer()
-                                    Text(personalRating > 0 ? String(format: "%.1f", personalRating) : "Not rated")
-                                        .foregroundColor(.secondary)
+                    if isWatched {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Your Rating")
+                                .font(.headline)
+                            
+                            HStack {
+                                Text("Rating:")
+                                Spacer()
+                                Text(personalRating > 0 ? String(format: "%.1f", personalRating) : "Not rated")
+                                    .foregroundColor(personalRating > 0 ? .primary : .secondary)
+                            }
+                            
+                            Slider(value: $personalRating, in: 0...10, step: 0.5)
+                                .tint(.yellow)
+                                .onChange(of: personalRating) { _, newValue in
+                                    item.personalRating = newValue
+                                    try? modelContext.save()
                                 }
-                                
-                                Slider(value: $personalRating, in: 0...10, step: 0.5)
-                                    .tint(.yellow)
-                                
-                                HStack {
-                                    ForEach(1...5, id: \.self) { star in
-                                        Image(systemName: personalRating >= Double(star * 2) ? "star.fill" : "star")
-                                            .foregroundColor(.yellow)
-                                            .onTapGesture {
-                                                personalRating = Double(star * 2)
-                                            }
-                                    }
+                            
+                            HStack(spacing: 8) {
+                                ForEach(1...5, id: \.self) { star in
+                                    Image(systemName: personalRating >= Double(star * 2) ? "star.fill" : "star")
+                                        .font(.title3)
+                                        .foregroundColor(.yellow)
+                                        .onTapGesture {
+                                            personalRating = Double(star * 2)
+                                            item.personalRating = personalRating
+                                            try? modelContext.save()
+                                        }
                                 }
                             }
-                        } header: {
-                            Text("Personal Rating")
-                                .font(.headline)
                         }
                     }
                     
-                    // Notes
-                    Section {
-                        ModernTaskTextField(
-                            text: $notes,
-                            placeholder: "Add your thoughts and review...",
-                            isFocused: .constant(false),
-                            isMultiline: true
-                        )
-                        .frame(minHeight: 100)
-                    } header: {
+                    VStack(alignment: .leading, spacing: 12) {
                         Text("Notes & Review")
                             .font(.headline)
+                        
+                        TextEditor(text: $notes)
+                            .frame(minHeight: 100)
+                            .padding(8)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(8)
+                            .onChange(of: notes) { _, newValue in
+                                item.notes = newValue
+                                try? modelContext.save()
+                            }
                     }
                 }
                 .padding()
@@ -1236,7 +1273,6 @@ struct WatchlistDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") {
-                        saveChanges()
                         dismiss()
                     }
                 }
@@ -1251,6 +1287,7 @@ struct WatchlistDetailView: View {
                 Button("Cancel", role: .cancel) { }
                 Button("Remove", role: .destructive) {
                     modelContext.delete(item)
+                    try? modelContext.save()
                     dismiss()
                 }
             } message: {
@@ -1259,17 +1296,12 @@ struct WatchlistDetailView: View {
             .onAppear {
                 personalRating = item.personalRating
                 notes = item.notes
+                isWatched = item.isWatched
+                isFavorite = item.isFavorite
             }
         }
     }
-    
-    private func saveChanges() {
-        item.personalRating = personalRating > 0 ? personalRating : 0.0
-        item.notes = notes.isEmpty ? "" : notes
-    }
 }
-
-
 
 // MARK: - Favorite Card
 struct FavoriteCard: View {
@@ -1278,40 +1310,32 @@ struct FavoriteCard: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ZStack {
+            ZStack(alignment: .topTrailing) {
                 AsyncImageLoader(
                     url: TMDBService.shared.getPosterURL(path: item.posterPath),
                     placeholder: Image(systemName: item.mediaType == "movie" ? "film" : "tv")
                 )
-                .aspectRatio(2/3, contentMode: .fit)
+                .aspectRatio(2/3, contentMode: .fill)
                 .frame(width: 120, height: 180)
                 .clipped()
                 .cornerRadius(12)
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
                 )
                 
-                // Favorite badge
-                VStack {
-                    HStack {
-                        Spacer()
-                        Image(systemName: "heart.fill")
-                            .font(.title3)
-                            .foregroundColor(.red)
-                            .background(Color.white)
-                            .clipShape(Circle())
-                            .padding(8)
-                    }
-                    Spacer()
-                }
+                Image(systemName: "heart.fill")
+                    .font(.title3)
+                    .foregroundColor(.red)
+                    .padding(8)
             }
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.displayTitle)
                     .font(.subheadline)
-                    .fontWeight(.medium)
+                    .fontWeight(.semibold)
                     .lineLimit(2)
+                    .frame(width: 120, alignment: .leading)
                 
                 if !item.releaseYear.isEmpty {
                     Text(item.releaseYear)
@@ -1319,12 +1343,12 @@ struct FavoriteCard: View {
                         .foregroundColor(.secondary)
                 }
                 
-                HStack {
+                HStack(spacing: 4) {
                     Image(systemName: "star.fill")
                         .font(.caption2)
                         .foregroundColor(.orange)
                     Text(String(format: "%.1f", item.voteAverage))
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
@@ -1350,13 +1374,13 @@ struct RecentCard: View {
                 url: TMDBService.shared.getPosterURL(path: item.posterPath),
                 placeholder: Image(systemName: item.mediaType == "movie" ? "film" : "tv")
             )
-            .aspectRatio(2/3, contentMode: .fit)
+            .aspectRatio(2/3, contentMode: .fill)
             .frame(width: 100, height: 150)
             .clipped()
             .cornerRadius(8)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
             )
             
             VStack(alignment: .leading, spacing: 4) {
@@ -1364,6 +1388,7 @@ struct RecentCard: View {
                     .font(.caption)
                     .fontWeight(.medium)
                     .lineLimit(2)
+                    .frame(width: 100, alignment: .leading)
                 
                 if !item.releaseYear.isEmpty {
                     Text(item.releaseYear)
@@ -1371,7 +1396,7 @@ struct RecentCard: View {
                         .foregroundColor(.secondary)
                 }
                 
-                HStack {
+                HStack(spacing: 4) {
                     Image(systemName: "star.fill")
                         .font(.caption2)
                         .foregroundColor(.orange)
@@ -1416,19 +1441,19 @@ struct FavoritesView: View {
                     Image(systemName: "heart")
                         .font(.largeTitle)
                         .foregroundColor(.gray)
-                    Text("No Favorites Yet")
+                    Text(searchText.isEmpty ? "No Favorites Yet" : "No Results")
                         .font(.headline)
-                    Text("Star items in your watchlist to add them to favorites")
+                    Text(searchText.isEmpty ? "Mark items as favorites to see them here" : "Try a different search term")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
+                        .padding(.horizontal)
                 }
                 .padding()
                 Spacer()
             } else {
-                // Item count header
                 HStack {
-                    Text("\(filteredItems.count) favorites")
+                    Text("\(filteredItems.count) favorite\(filteredItems.count == 1 ? "" : "s")")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     Spacer()
@@ -1445,7 +1470,6 @@ struct FavoritesView: View {
                 .listStyle(PlainListStyle())
             }
         }
-        .searchable(text: $searchText, prompt: "Search favorites")
     }
 }
 
@@ -1456,25 +1480,23 @@ struct FavoritesListItem: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            // Poster image
             AsyncImageLoader(
                 url: TMDBService.shared.getPosterURL(path: item.posterPath),
                 placeholder: Image(systemName: item.mediaType == "movie" ? "film" : "tv")
             )
-            .aspectRatio(2/3, contentMode: .fit)
+            .aspectRatio(2/3, contentMode: .fill)
             .frame(width: 60, height: 90)
             .clipped()
             .cornerRadius(8)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
             )
             
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(item.displayTitle)
                     .font(.headline)
                     .lineLimit(2)
-                    .multilineTextAlignment(.leading)
                 
                 if !item.releaseYear.isEmpty {
                     Text(item.releaseYear)
@@ -1492,7 +1514,6 @@ struct FavoritesListItem: View {
                     
                     Spacer()
                     
-                    // Favorite badge
                     Image(systemName: "heart.fill")
                         .font(.caption)
                         .foregroundColor(.red)
@@ -1503,7 +1524,6 @@ struct FavoritesListItem: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .lineLimit(2)
-                        .multilineTextAlignment(.leading)
                 }
             }
             
@@ -1534,24 +1554,16 @@ struct PopularMoviesView: View {
     var body: some View {
         VStack(spacing: 0) {
             if isLoading {
-                HStack {
-                    Spacer()
-                    ProgressView("Loading popular movies...")
-                    Spacer()
-                }
-                .frame(height: 200)
+                ProgressView("Loading...")
+                    .frame(height: 200)
             } else if errorMessage != nil {
-                HStack {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.title2)
-                            .foregroundColor(.orange)
-                        Text("Failed to load popular movies")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title2)
+                        .foregroundColor(.orange)
+                    Text("Failed to load")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
                 }
                 .frame(height: 200)
             } else {
@@ -1560,7 +1572,8 @@ struct PopularMoviesView: View {
                         ForEach(popularMovies.prefix(10), id: \.id) { movie in
                             PopularMovieCard(
                                 movie: movie,
-                                isInWatchlist: watchlistIds.contains(movie.id)
+                                isInWatchlist: watchlistIds.contains(movie.id),
+                                watchlistItems: watchlistItems
                             )
                         }
                     }
@@ -1586,7 +1599,7 @@ struct PopularMoviesView: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = "Failed to load popular movies"
+                    errorMessage = "Failed to load"
                     isLoading = false
                 }
             }
@@ -1609,24 +1622,16 @@ struct PopularTVShowsView: View {
     var body: some View {
         VStack(spacing: 0) {
             if isLoading {
-                HStack {
-                    Spacer()
-                    ProgressView("Loading popular TV shows...")
-                    Spacer()
-                }
-                .frame(height: 200)
+                ProgressView("Loading...")
+                    .frame(height: 200)
             } else if errorMessage != nil {
-                HStack {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.title2)
-                            .foregroundColor(.orange)
-                        Text("Failed to load popular TV shows")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title2)
+                        .foregroundColor(.orange)
+                    Text("Failed to load")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
                 }
                 .frame(height: 200)
             } else {
@@ -1635,7 +1640,8 @@ struct PopularTVShowsView: View {
                         ForEach(popularTVShows.prefix(10), id: \.id) { tvShow in
                             PopularTVShowCard(
                                 tvShow: tvShow,
-                                isInWatchlist: watchlistIds.contains(tvShow.id)
+                                isInWatchlist: watchlistIds.contains(tvShow.id),
+                                watchlistItems: watchlistItems
                             )
                         }
                     }
@@ -1661,7 +1667,7 @@ struct PopularTVShowsView: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = "Failed to load popular TV shows"
+                    errorMessage = "Failed to load"
                     isLoading = false
                 }
             }
@@ -1669,159 +1675,191 @@ struct PopularTVShowsView: View {
     }
 }
 
-// MARK: - Popular Movie Card
+// MARK: - Popular Movie Card (Fixed sizing)
 struct PopularMovieCard: View {
     let movie: TMDBItem
     let isInWatchlist: Bool
+    let watchlistItems: [WatchlistItem]
     @Environment(\.modelContext) private var modelContext
+    @StateObject private var tmdbService = TMDBService.shared
     @State private var showingDetail = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Poster image
-            AsyncImageLoader(
-                url: TMDBService.shared.getPosterURL(path: movie.posterPath),
-                placeholder: Image(systemName: "film")
-            )
-            .aspectRatio(2/3, contentMode: .fit)
-            .frame(width: 50, height: 75)
-            .clipped()
-            .cornerRadius(8)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
-            )
-            .onTapGesture {
-                showingDetail = true
+            ZStack(alignment: .topTrailing) {
+                AsyncImageLoader(
+                    url: TMDBService.shared.getPosterURL(path: movie.posterPath),
+                    placeholder: Image(systemName: "film")
+                )
+                .aspectRatio(2/3, contentMode: .fill)
+                .frame(width: 120, height: 180)
+                .clipped()
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                )
+                
+                // Watchlist button overlay
+                Button {
+                    toggleWatchlist()
+                } label: {
+                    Image(systemName: isInWatchlist ? "checkmark.circle.fill" : "plus.circle.fill")
+                        .font(.caption)
+                        .foregroundColor(isInWatchlist ? .green : .blue)
+                        .padding(6)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Circle())
+                }
+                .padding(6)
             }
             
-            // Title
             Text(movie.displayTitle)
                 .font(.caption)
                 .fontWeight(.medium)
                 .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .frame(width: 50)
+                .frame(width: 120, alignment: .leading)
         }
-        .frame(width: 50)
+        .frame(width: 120)
+        .onTapGesture {
+            showingDetail = true
+        }
         .sheet(isPresented: $showingDetail) {
-            SearchDetailView(item: movie, isInWatchlist: isInWatchlist)
+            SearchDetailView(
+                item: movie,
+                isInWatchlist: isInWatchlist,
+                watchlistItems: watchlistItems
+            )
         }
     }
     
     private func toggleWatchlist() {
-        Task { @MainActor in
-            if isInWatchlist {
-                // Remove from watchlist
-                if let existingItem = try? modelContext.fetch(FetchDescriptor<WatchlistItem>()).first(where: { $0.tmdbId == movie.id }) {
-                    modelContext.delete(existingItem)
-                }
-            } else {
-                // Add to watchlist
-                let genreNames = TMDBService.shared.getGenreNames(for: movie.genreIds ?? [], mediaType: movie.actualMediaType)
-                
-                let watchlistItem = WatchlistItem(
-                    tmdbId: movie.id,
-                    title: movie.displayTitle,
-                    originalTitle: movie.originalTitle ?? movie.originalName ?? movie.displayTitle,
-                    overview: movie.overview,
-                    mediaType: movie.actualMediaType,
-                    posterPath: movie.posterPath,
-                    backdropPath: movie.backdropPath,
-                    releaseDate: movie.releaseDate,
-                    firstAirDate: movie.firstAirDate,
-                    voteAverage: movie.voteAverage,
-                    voteCount: movie.voteCount,
-                    runtime: movie.runtime,
-                    numberOfSeasons: movie.numberOfSeasons,
-                    numberOfEpisodes: movie.numberOfEpisodes,
-                    genres: genreNames
-                )
-                modelContext.insert(watchlistItem)
+        if isInWatchlist {
+            if let existingItem = watchlistItems.first(where: { $0.tmdbId == movie.id }) {
+                modelContext.delete(existingItem)
+                try? modelContext.save()
             }
+        } else {
+            let genreNames = tmdbService.getGenreNames(for: movie.genreIds ?? [], mediaType: movie.actualMediaType)
+            
+            let watchlistItem = WatchlistItem(
+                tmdbId: movie.id,
+                title: movie.displayTitle,
+                originalTitle: movie.originalTitle ?? movie.originalName ?? movie.displayTitle,
+                overview: movie.safeOverview,
+                mediaType: movie.actualMediaType,
+                posterPath: movie.posterPath,
+                backdropPath: movie.backdropPath,
+                releaseDate: movie.releaseDate,
+                firstAirDate: movie.firstAirDate,
+                voteAverage: movie.safeVoteAverage,
+                voteCount: movie.safeVoteCount,
+                runtime: movie.runtime,
+                numberOfSeasons: movie.numberOfSeasons,
+                numberOfEpisodes: movie.numberOfEpisodes,
+                genres: genreNames
+            )
+            modelContext.insert(watchlistItem)
+            try? modelContext.save()
         }
     }
 }
 
-// MARK: - Popular TV Show Card
+// MARK: - Popular TV Show Card (Fixed sizing)
 struct PopularTVShowCard: View {
     let tvShow: TMDBItem
     let isInWatchlist: Bool
+    let watchlistItems: [WatchlistItem]
     @Environment(\.modelContext) private var modelContext
+    @StateObject private var tmdbService = TMDBService.shared
     @State private var showingDetail = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Poster image
-            AsyncImageLoader(
-                url: TMDBService.shared.getPosterURL(path: tvShow.posterPath),
-                placeholder: Image(systemName: "tv")
-            )
-            .aspectRatio(2/3, contentMode: .fit)
-            .frame(width: 50, height: 75)
-            .clipped()
-            .cornerRadius(8)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
-            )
-            .onTapGesture {
-                showingDetail = true
+            ZStack(alignment: .topTrailing) {
+                AsyncImageLoader(
+                    url: TMDBService.shared.getPosterURL(path: tvShow.posterPath),
+                    placeholder: Image(systemName: "tv")
+                )
+                .aspectRatio(2/3, contentMode: .fill)
+                .frame(width: 120, height: 180)
+                .clipped()
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                )
+                
+                // Watchlist button overlay
+                Button {
+                    toggleWatchlist()
+                } label: {
+                    Image(systemName: isInWatchlist ? "checkmark.circle.fill" : "plus.circle.fill")
+                        .font(.caption)
+                        .foregroundColor(isInWatchlist ? .green : .blue)
+                        .padding(6)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Circle())
+                }
+                .padding(6)
             }
             
-            // Title
             Text(tvShow.displayTitle)
                 .font(.caption)
                 .fontWeight(.medium)
                 .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .frame(width: 50)
+                .frame(width: 120, alignment: .leading)
         }
-        .frame(width: 50)
+        .frame(width: 120)
+        .onTapGesture {
+            showingDetail = true
+        }
         .sheet(isPresented: $showingDetail) {
-            SearchDetailView(item: tvShow, isInWatchlist: isInWatchlist)
+            SearchDetailView(
+                item: tvShow,
+                isInWatchlist: isInWatchlist,
+                watchlistItems: watchlistItems
+            )
         }
     }
     
     private func toggleWatchlist() {
-        Task { @MainActor in
-            if isInWatchlist {
-                // Remove from watchlist
-                if let existingItem = try? modelContext.fetch(FetchDescriptor<WatchlistItem>()).first(where: { $0.tmdbId == tvShow.id }) {
-                    modelContext.delete(existingItem)
-                }
-            } else {
-                // Add to watchlist
-                let genreNames = TMDBService.shared.getGenreNames(for: tvShow.genreIds ?? [], mediaType: tvShow.actualMediaType)
-                
-                let watchlistItem = WatchlistItem(
-                    tmdbId: tvShow.id,
-                    title: tvShow.displayTitle,
-                    originalTitle: tvShow.originalTitle ?? tvShow.originalName ?? tvShow.displayTitle,
-                    overview: tvShow.overview,
-                    mediaType: tvShow.actualMediaType,
-                    posterPath: tvShow.posterPath,
-                    backdropPath: tvShow.backdropPath,
-                    releaseDate: tvShow.releaseDate,
-                    firstAirDate: tvShow.firstAirDate,
-                    voteAverage: tvShow.voteAverage,
-                    voteCount: tvShow.voteCount,
-                    runtime: tvShow.runtime,
-                    numberOfSeasons: tvShow.numberOfSeasons,
-                    numberOfEpisodes: tvShow.numberOfEpisodes,
-                    genres: genreNames
-                )
-                modelContext.insert(watchlistItem)
+        if isInWatchlist {
+            if let existingItem = watchlistItems.first(where: { $0.tmdbId == tvShow.id }) {
+                modelContext.delete(existingItem)
+                try? modelContext.save()
             }
+        } else {
+            let genreNames = tmdbService.getGenreNames(for: tvShow.genreIds ?? [], mediaType: tvShow.actualMediaType)
+            
+            let watchlistItem = WatchlistItem(
+                tmdbId: tvShow.id,
+                title: tvShow.displayTitle,
+                originalTitle: tvShow.originalTitle ?? tvShow.originalName ?? tvShow.displayTitle,
+                overview: tvShow.safeOverview,
+                mediaType: tvShow.actualMediaType,
+                posterPath: tvShow.posterPath,
+                backdropPath: tvShow.backdropPath,
+                releaseDate: tvShow.releaseDate,
+                firstAirDate: tvShow.firstAirDate,
+                voteAverage: tvShow.safeVoteAverage,
+                voteCount: tvShow.safeVoteCount,
+                runtime: tvShow.runtime,
+                numberOfSeasons: tvShow.numberOfSeasons,
+                numberOfEpisodes: tvShow.numberOfEpisodes,
+                genres: genreNames
+            )
+            modelContext.insert(watchlistItem)
+            try? modelContext.save()
         }
     }
 }
 
 // MARK: - Preview
-
 struct WatchlistMainView_Previews: PreviewProvider {
     static var previews: some View {
         WatchlistMainView()
             .modelContainer(for: [WatchlistItem.self])
     }
 }
+

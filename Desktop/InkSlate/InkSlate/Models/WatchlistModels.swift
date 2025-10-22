@@ -131,21 +131,22 @@ struct TMDBItem: Codable {
     let name: String? // For TV shows
     let originalTitle: String?
     let originalName: String? // For TV shows
-    let overview: String
+    let overview: String?
     let mediaType: String?
     let posterPath: String?
     let backdropPath: String?
     let releaseDate: String?
     let firstAirDate: String?
-    let voteAverage: Double
-    let voteCount: Int
+    let voteAverage: Double?
+    let voteCount: Int?
     let runtime: Int?
     let numberOfSeasons: Int?
     let numberOfEpisodes: Int?
     let genreIds: [Int]?
+    let genres: [String]?  // For detailed responses
     
     enum CodingKeys: String, CodingKey {
-        case id, title, name, overview
+        case id, title, name, overview, genres
         case originalTitle = "original_title"
         case originalName = "original_name"
         case mediaType = "media_type"
@@ -168,6 +169,18 @@ struct TMDBItem: Codable {
     var actualMediaType: String {
         return mediaType ?? "movie"
     }
+    
+    var safeOverview: String {
+        return overview ?? ""
+    }
+    
+    var safeVoteAverage: Double {
+        return voteAverage ?? 0.0
+    }
+    
+    var safeVoteCount: Int {
+        return voteCount ?? 0
+    }
 }
 
 struct TMDBGenre: Codable {
@@ -177,4 +190,21 @@ struct TMDBGenre: Codable {
 
 struct TMDBGenresResponse: Codable {
     let genres: [TMDBGenre]
+}
+
+// MARK: - Cast & Credits Models
+struct CastMember: Codable {
+    let id: Int
+    let name: String
+    let character: String
+    let profilePath: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, character
+        case profilePath = "profile_path"
+    }
+}
+
+struct CreditsResponse: Codable {
+    let cast: [CastMember]
 }
