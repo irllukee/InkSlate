@@ -41,19 +41,4 @@ extension Color {
         return String(format: "#%02lX%02lX%02lX", lroundf(Float(r * 255)), lroundf(Float(g * 255)), lroundf(Float(b * 255)))
     }
     
-    // MARK: - Dark Mode Support
-    /// Creates an adaptive color that changes based on the current color scheme
-    /// - Parameters:
-    ///   - light: Color to use in light mode
-    ///   - dark: Color to use in dark mode
-    init(light: Color, dark: Color) {
-        self.init(UIColor { traitCollection in
-            switch traitCollection.userInterfaceStyle {
-            case .dark:
-                return UIColor(dark)
-            default:
-                return UIColor(light)
-            }
-        })
-    }
 }

@@ -88,7 +88,7 @@ Slate features a comprehensive design system that ensures consistency across all
 ## 🛠️ **Technical Features**
 
 - **SwiftUI**: Built with Apple's modern declarative UI framework
-- **SwiftData**: Local data persistence with Apple's latest data framework
+- **Core Data**: Local data persistence with Apple's proven data framework
 - **CloudKit Integration**: Seamless data synchronization across Apple devices
 - **iOS 18.5+**: Optimized for the latest iOS features
 - **Real-time Updates**: Live time display and dynamic content
@@ -100,7 +100,7 @@ Slate features a comprehensive design system that ensures consistency across all
 - **Search Debouncing**: Optimized search performance with debounced input
 - **Async Image Loading**: Efficient image loading and caching
 - **Modern UI Components**: Custom components with consistent design system
-- **Data Models**: Comprehensive SwiftData models for all features
+- **Data Models**: Comprehensive Core Data models with CloudKit sync for all features
 
 ## 📱 **Screenshots**
 
@@ -144,32 +144,37 @@ InkSlate/
 │   ├── ContentView.swift   # Main content coordinator
 │   ├── DesignSystem.swift  # Design system definitions
 │   ├── LoadingStateManager.swift
-│   ├── CloudKitConfiguration.swift
+│   ├── PersistenceController.swift  # Core Data & CloudKit setup
 │   └── SharedStateManager.swift
-├── Models/                 # Data models
-│   ├── NotesModels.swift
-│   ├── QuotesModels.swift
-│   ├── RecipeModels.swift
-│   ├── PlacesModels.swift
-│   ├── WatchlistModels.swift
-│   ├── JournalModels.swift
-│   ├── JournalPromptModels.swift
-│   ├── MindMapModels.swift
-│   └── TodoModels.swift
+├── Models/                 # Data model extensions
+│   └── CoreDataExtensions.swift  # Core Data model extensions
+├── InkSlate.xcdatamodeld/  # Core Data model definitions
+│   └── InkSlate.xcdatamodel/
 ├── Views/                  # SwiftUI views
 │   ├── Items/             # Homescreen
 │   ├── Notes/             # Notes feature (FSNotes-inspired)
 │   ├── Quotes/             # Quotes collection
 │   ├── Recipes/           # Recipe management
 │   ├── Places/            # Location tracking
-│   ├── Watchlist/         # Entertainment tracking
+│   ├── WantToWatch/         # Entertainment tracking (TMDB integration)
 │   ├── MindMaps/          # Mind mapping
 │   ├── Journal/           # Journaling
+│   ├── Todo/              # Todo management
+│   ├── Budget/            # Budget tracking
+│   ├── Calendar/          # Calendar integration
 │   ├── Navigation/        # Navigation components
 │   ├── Settings/          # App settings
 │   └── Profile/           # User profile
 └── Services/              # External services
-    └── TMDBService.swift  # Movie database integration
+    ├── TMDBService.swift  # Movie database integration
+    ├── ErrorHandlingService.swift
+    ├── EncryptionService.swift
+    ├── NotesService.swift
+    ├── BudgetManager.swift
+    ├── DailyQuoteService.swift
+    ├── ProfileService.swift
+    ├── SharingService.swift
+    └── ThemeService.swift
 ```
 
 ## 🤝 **Contributing**
@@ -189,7 +194,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 **Acknowledgments**
 
-- Built with SwiftUI and SwiftData
+- Built with SwiftUI and Core Data
 - Icons from SF Symbols
 - Design inspired by modern minimalist principles
 - Thanks to the open-source community for inspiration and tools

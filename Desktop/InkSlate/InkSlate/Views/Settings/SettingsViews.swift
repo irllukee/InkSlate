@@ -6,17 +6,18 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 // MARK: - Settings Feature Views
 struct SettingsView: View {
     @State private var showingMenuReorder = false
     @State private var showingPrivacySettings = false
     @State private var showingProfileCustomization = false
+    @State private var showingCloudKitTroubleshooting = false
     @State private var showingFactoryResetWarning = false
     @State private var showingFactoryResetConfirmation = false
     @EnvironmentObject var shared: SharedStateManager
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     
     var body: some View {
         List {
@@ -77,6 +78,25 @@ struct SettingsView: View {
                 .foregroundColor(.primary)
             }
             
+            Section("Data & Sync") {
+                Button(action: {
+                    showingCloudKitTroubleshooting = true
+                }) {
+                    HStack {
+                        Image(systemName: "icloud")
+                            .foregroundColor(DesignSystem.Colors.accent)
+                            .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
+                        Text("iCloud Sync Troubleshooting")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                            .font(.caption)
+                            .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
+                    }
+                }
+                .foregroundColor(.primary)
+            }
+            
             
             Section("Danger Zone") {
                 Button(action: {
@@ -107,6 +127,9 @@ struct SettingsView: View {
         .sheet(isPresented: $showingProfileCustomization) {
             ProfileCustomizationView(profileService: ProfileService())
         }
+        .sheet(isPresented: $showingCloudKitTroubleshooting) {
+            CloudKitTroubleshootingView()
+        }
         .alert("⚠️ Factory Reset Warning", isPresented: $showingFactoryResetWarning) {
             Button("Continue", role: .destructive) {
                 showingFactoryResetConfirmation = true
@@ -126,121 +149,185 @@ struct SettingsView: View {
     }
     
     private func performFactoryReset() {
-        // Delete all SwiftData models
+        // Delete all Core Data models
         do {
-            // Delete all journal books and entries
-            let journalBookDescriptor = FetchDescriptor<JournalBook>()
-            let journalBooks = try modelContext.fetch(journalBookDescriptor)
-            for book in journalBooks {
-                modelContext.delete(book)
+            // Delete all notes and projects
+            let notesRequest: NSFetchRequest<Notes> = Notes.fetchRequest()
+            let notes = try viewContext.fetch(notesRequest)
+            for note in notes {
+                viewContext.delete(note)
             }
             
-            let journalEntryDescriptor = FetchDescriptor<JournalEntry>()
-            let journalEntries = try modelContext.fetch(journalEntryDescriptor)
+            let projectRequest: NSFetchRequest<FSProject> = FSProject.fetchRequest()
+            let projects = try viewContext.fetch(projectRequest)
+            for project in projects {
+                viewContext.delete(project)
+            }
+            
+            let projectSettingsRequest: NSFetchRequest<ProjectSettings> = ProjectSettings.fetchRequest()
+            let projectSettings = try viewContext.fetch(projectSettingsRequest)
+            for settings in projectSettings {
+                viewContext.delete(settings)
+            }
+            
+            let tagRequest: NSFetchRequest<FSTag> = FSTag.fetchRequest()
+            let tags = try viewContext.fetch(tagRequest)
+            for tag in tags {
+                viewContext.delete(tag)
+            }
+            
+            // Delete all journal books and entries
+            let journalBookRequest: NSFetchRequest<JournalBook> = JournalBook.fetchRequest()
+            let journalBooks = try viewContext.fetch(journalBookRequest)
+            for book in journalBooks {
+                viewContext.delete(book)
+            }
+            
+            let journalEntryRequest: NSFetchRequest<JournalEntry> = JournalEntry.fetchRequest()
+            let journalEntries = try viewContext.fetch(journalEntryRequest)
             for entry in journalEntries {
-                modelContext.delete(entry)
+                viewContext.delete(entry)
             }
             
             // Delete all todo tabs and tasks
-            let todoTabDescriptor = FetchDescriptor<TodoTab>()
-            let todoTabs = try modelContext.fetch(todoTabDescriptor)
+            let todoTabRequest: NSFetchRequest<TodoTab> = TodoTab.fetchRequest()
+            let todoTabs = try viewContext.fetch(todoTabRequest)
             for tab in todoTabs {
-                modelContext.delete(tab)
+                viewContext.delete(tab)
             }
             
-            let todoTaskDescriptor = FetchDescriptor<TodoTask>()
-            let todoTasks = try modelContext.fetch(todoTaskDescriptor)
+            let todoTaskRequest: NSFetchRequest<TodoTask> = TodoTask.fetchRequest()
+            let todoTasks = try viewContext.fetch(todoTaskRequest)
             for task in todoTasks {
-                modelContext.delete(task)
-            }
-            
-            // Delete all recipes, ingredients, and related items
-            let recipeDescriptor = FetchDescriptor<Recipe>()
-            let recipes = try modelContext.fetch(recipeDescriptor)
-            for recipe in recipes {
-                modelContext.delete(recipe)
-            }
-            
-            let recipeIngredientDescriptor = FetchDescriptor<RecipeIngredient>()
-            let ingredients = try modelContext.fetch(recipeIngredientDescriptor)
-            for ingredient in ingredients {
-                modelContext.delete(ingredient)
-            }
-            
-            let fridgeDescriptor = FetchDescriptor<FridgeItem>()
-            let fridgeItems = try modelContext.fetch(fridgeDescriptor)
-            for item in fridgeItems {
-                modelContext.delete(item)
-            }
-            
-            let spiceDescriptor = FetchDescriptor<SpiceItem>()
-            let spiceItems = try modelContext.fetch(spiceDescriptor)
-            for item in spiceItems {
-                modelContext.delete(item)
-            }
-            
-            let cartDescriptor = FetchDescriptor<CartItem>()
-            let cartItems = try modelContext.fetch(cartDescriptor)
-            for item in cartItems {
-                modelContext.delete(item)
+                viewContext.delete(task)
             }
             
             // Delete all mind maps and nodes
-            let mindMapDescriptor = FetchDescriptor<MindMap>()
-            let mindMaps = try modelContext.fetch(mindMapDescriptor)
+            let mindMapRequest: NSFetchRequest<MindMap> = MindMap.fetchRequest()
+            let mindMaps = try viewContext.fetch(mindMapRequest)
             for mindMap in mindMaps {
-                modelContext.delete(mindMap)
+                viewContext.delete(mindMap)
             }
             
-            let mindMapNodeDescriptor = FetchDescriptor<MindMapNode>()
-            let mindMapNodes = try modelContext.fetch(mindMapNodeDescriptor)
+            let mindMapNodeRequest: NSFetchRequest<MindMapNode> = MindMapNode.fetchRequest()
+            let mindMapNodes = try viewContext.fetch(mindMapNodeRequest)
             for node in mindMapNodes {
-                modelContext.delete(node)
+                viewContext.delete(node)
             }
             
             // Delete all places and categories
-            let placeCategoryDescriptor = FetchDescriptor<PlaceCategory>()
-            let placeCategories = try modelContext.fetch(placeCategoryDescriptor)
+            let placeCategoryRequest: NSFetchRequest<PlaceCategory> = PlaceCategory.fetchRequest()
+            let placeCategories = try viewContext.fetch(placeCategoryRequest)
             for category in placeCategories {
-                modelContext.delete(category)
+                viewContext.delete(category)
             }
             
-            let placeDescriptor = FetchDescriptor<Place>()
-            let places = try modelContext.fetch(placeDescriptor)
+            let placeRequest: NSFetchRequest<Place> = Place.fetchRequest()
+            let places = try viewContext.fetch(placeRequest)
             for place in places {
-                modelContext.delete(place)
+                viewContext.delete(place)
             }
             
             // Delete all quotes
-            let quoteDescriptor = FetchDescriptor<Quote>()
-            let quotes = try modelContext.fetch(quoteDescriptor)
+            let quoteRequest: NSFetchRequest<Quote> = Quote.fetchRequest()
+            let quotes = try viewContext.fetch(quoteRequest)
             for quote in quotes {
-                modelContext.delete(quote)
+                viewContext.delete(quote)
             }
             
-            // Delete all watchlist items
-            let watchlistDescriptor = FetchDescriptor<WatchlistItem>()
-            let watchlistItems = try modelContext.fetch(watchlistDescriptor)
-            for item in watchlistItems {
-                modelContext.delete(item)
+            // Delete all want to watch items
+            let wantToWatchRequest: NSFetchRequest<WantToWatchItem> = WantToWatchItem.fetchRequest()
+            let wantToWatchItems = try viewContext.fetch(wantToWatchRequest)
+            for item in wantToWatchItems {
+                viewContext.delete(item)
             }
             
-            // Save changes
-            try modelContext.save()
+            // Delete all budget categories, subcategories, and items
+            let budgetCategoryRequest: NSFetchRequest<BudgetCategory> = BudgetCategory.fetchRequest()
+            let budgetCategories = try viewContext.fetch(budgetCategoryRequest)
+            for category in budgetCategories {
+                viewContext.delete(category)
+            }
             
-            // Clear all UserDefaults
+            let budgetSubcategoryRequest: NSFetchRequest<BudgetSubcategory> = BudgetSubcategory.fetchRequest()
+            let budgetSubcategories = try viewContext.fetch(budgetSubcategoryRequest)
+            for subcategory in budgetSubcategories {
+                viewContext.delete(subcategory)
+            }
+            
+            let budgetItemRequest: NSFetchRequest<BudgetItem> = BudgetItem.fetchRequest()
+            let budgetItems = try viewContext.fetch(budgetItemRequest)
+            for item in budgetItems {
+                viewContext.delete(item)
+            }
+            
+            // Delete all recipes and ingredients
+            let recipeRequest: NSFetchRequest<Recipe> = Recipe.fetchRequest()
+            let recipes = try viewContext.fetch(recipeRequest)
+            for recipe in recipes {
+                viewContext.delete(recipe)
+            }
+
+            let recipeIngredientRequest: NSFetchRequest<RecipeIngredient> = RecipeIngredient.fetchRequest()
+            let ingredients = try viewContext.fetch(recipeIngredientRequest)
+            for ingredient in ingredients {
+                viewContext.delete(ingredient)
+            }
+            
+            // Save changes to Core Data
+            try viewContext.save()
+            
+            // Clear all UserDefaults with specific keys
             let defaults = UserDefaults.standard
+            
+            // Clear all InkSlate-specific UserDefaults keys
+            let inkSlateKeys = [
+                "MenuOrder",
+                "HiddenMenuItems", 
+                "lastSyncDate",
+                "profileUserName",
+                "profileUserIcon", 
+                "profileUserEmail",
+                "profileUserImage",
+                "lastQuoteDate",
+                "currentQuoteId"
+            ]
+            
+            for key in inkSlateKeys {
+                defaults.removeObject(forKey: key)
+            }
+            
+            // Clear all other UserDefaults (nuclear option)
             let dictionary = defaults.dictionaryRepresentation()
             for key in dictionary.keys {
                 defaults.removeObject(forKey: key)
             }
             defaults.synchronize()
             
+            // Clear Keychain data (encrypted notes passwords)
+            clearKeychainData()
+            
             // Reset shared state
             shared.resetToDefaults()
             
         } catch {
             // Handle error silently - user doesn't need to see technical errors
+            print("Factory reset error: \(error)")
+        }
+    }
+    
+    private func clearKeychainData() {
+        let keychainService = "co.inkslate.encryption"
+        
+        // Delete all keychain items for our service
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService
+        ]
+        
+        let status = SecItemDelete(query as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            print("Keychain clear error: \(status)")
         }
     }
 }

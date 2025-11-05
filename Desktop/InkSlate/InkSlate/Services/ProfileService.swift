@@ -2,8 +2,6 @@
 //  ProfileService.swift
 //  InkSlate
 //
-//  Created by AI Assistant on 12/19/24.
-//
 
 import SwiftUI
 import Foundation
@@ -42,6 +40,11 @@ class ProfileService: ObservableObject {
     
     init() {
         loadProfile()
+    }
+    
+    
+    deinit {
+        
     }
     
     func loadProfile() {

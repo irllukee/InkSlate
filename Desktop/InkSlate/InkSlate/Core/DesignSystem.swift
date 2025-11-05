@@ -7,6 +7,22 @@
 
 import SwiftUI
 
+// MARK: - Color Extension for Light/Dark Mode
+extension Color {
+    init(light: Color, dark: Color) {
+        self.init(UIColor { traitCollection in
+            switch traitCollection.userInterfaceStyle {
+            case .light, .unspecified:
+                return UIColor(light)
+            case .dark:
+                return UIColor(dark)
+            @unknown default:
+                return UIColor(light)
+            }
+        })
+    }
+}
+
 // MARK: - Minimalist Design System
 struct DesignSystem {
     
@@ -20,7 +36,7 @@ struct DesignSystem {
         static let accentDark = Color(light: Color(red: 0.1, green: 0.1, blue: 0.1),
                                      dark: Color(red: 0.95, green: 0.95, blue: 0.95))
         
-        // Background Colors - Matte Paper Feel (Dark Mode Adaptive)
+        
         static let background = Color(light: Color(red: 0.98, green: 0.98, blue: 0.98),
                                      dark: Color(red: 0.1, green: 0.1, blue: 0.1))
         static let backgroundSecondary = Color(light: Color(red: 0.96, green: 0.96, blue: 0.96),
@@ -261,7 +277,7 @@ struct MinimalistCardStyle: ViewModifier {
     
     private var shadowColor: Color {
         switch variant {
-        case .elevated: return DesignSystem.Shadows.small
+        case .elevated: return DesignSystem.Shadows.medium
         case .outlined: return Color.clear
         case .filled: return Color.clear
         }
@@ -269,7 +285,7 @@ struct MinimalistCardStyle: ViewModifier {
     
     private var shadowRadius: CGFloat {
         switch variant {
-        case .elevated: return 2
+        case .elevated: return 4
         case .outlined: return 0
         case .filled: return 0
         }
@@ -277,7 +293,7 @@ struct MinimalistCardStyle: ViewModifier {
     
     private var shadowOffset: CGFloat {
         switch variant {
-        case .elevated: return 1
+        case .elevated: return 2
         case .outlined: return 0
         case .filled: return 0
         }
@@ -347,4 +363,39 @@ extension View {
     ) -> some View {
         buttonStyle(MinimalistButtonStyle(variant: variant, size: size))
     }
+}
+
+// MARK: - Refresh Control
+struct RefreshControl: View {
+    @Binding var isRefreshing: Bool
+    let onRefresh: () -> Void
+    
+    var body: some View {
+        if isRefreshing {
+            HStack {
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text("Refreshing...")
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+            }
+            .padding()
+        }
+    }
+}
+
+// MARK: - Haptic Feedback
+func lightHaptic() {
+    let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+    impactFeedback.impactOccurred()
+}
+
+func mediumHaptic() {
+    let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+    impactFeedback.impactOccurred()
+}
+
+func heavyHaptic() {
+    let impactFeedback = UIImpactFeedbackGenerator(style: .heavy)
+    impactFeedback.impactOccurred()
 }

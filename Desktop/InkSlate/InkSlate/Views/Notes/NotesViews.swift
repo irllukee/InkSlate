@@ -2,38 +2,34 @@
 //  NotesViews.swift
 //  InkSlate
 //
-//  Created by Lucas Waldron on 10/18/25
-//  Recently Deleted: soft-delete, restore, permanent delete, empty trash, 30-day auto-purge
-//
 
 import SwiftUI
-import SwiftData
 import Foundation
 import UIKit
+import CoreData
+
+// MARK: - Sort Options (imported from NotesService)
 
 // MARK: - Main Notes List View
-struct FSNotesListView: View {
-    @Environment(\.modelContext) private var modelContext
+struct NotesListView: View {
+    @Environment(\.managedObjectContext) private var viewContext
     
-    // Separate queries for normal and deleted notes
-    @Query(
-        filter: #Predicate<FSNote> { !$0.isDeleted },
-        sort: \FSNote.modifiedDate,
-        order: .reverse
-    ) private var normalNotes: [FSNote]
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Notes.modifiedDate, ascending: false)],
+        predicate: NSPredicate(format: "isMarkedDeleted == NO")
+    ) private var normalNotes: FetchedResults<Notes>
     
-    @Query(
-        filter: #Predicate<FSNote> { $0.isDeleted },
-        sort: \FSNote.modifiedDate,
-        order: .reverse
-    ) private var deletedNotes: [FSNote]
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Notes.modifiedDate, ascending: false)],
+        predicate: NSPredicate(format: "isMarkedDeleted == YES")
+    ) private var deletedNotes: FetchedResults<Notes>
 
     @State private var searchText: String = ""
     @State private var debouncedSearchText = ""
     @State private var searchTimer: Timer?
 
     @State private var showingNewNoteSheet = false
-    @State private var selectedNote: FSNote?
+    @State private var selectedNote: Notes?
 
     @State private var sortBy: SortBy = .modificationDate
     @State private var sortDirection: SortDirection = .descending
@@ -46,34 +42,31 @@ struct FSNotesListView: View {
     @State private var errorMessage = ""
     @State private var isLoading = false
 
-    // MARK: - Derived
-    private var filteredNotes: [FSNote] {
-        // Choose the right source based on view mode
-        var notes = showingDeletedNotes ? deletedNotes : normalNotes
+    private var filteredNotes: [Notes] {
+        var notes = Array(showingDeletedNotes ? deletedNotes : normalNotes)
 
-        // search
         if !debouncedSearchText.isEmpty {
             let q = debouncedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            notes = notes.filter {
-                $0.title.localizedCaseInsensitiveContains(q) ||
-                $0.content.localizedCaseInsensitiveContains(q) ||
-                $0.preview.localizedCaseInsensitiveContains(q)
+            let searchLower = q.lowercased()
+            
+            notes = notes.filter { note in
+                (note.title?.lowercased().contains(searchLower) ?? false) ||
+                (note.content?.lowercased().contains(searchLower) ?? false) ||
+                (note.preview?.lowercased().contains(searchLower) ?? false)
             }
         }
 
-        // pinned filter only in normal view
         if showPinnedOnly && !showingDeletedNotes {
             notes = notes.filter { $0.isPinned }
         }
 
-        // sort
         switch sortBy {
         case .modificationDate:
-            notes.sort { sortDirection == .ascending ? $0.modifiedDate < $1.modifiedDate : $0.modifiedDate > $1.modifiedDate }
+            notes.sort { sortDirection == .ascending ? ($0.modifiedDate ?? Date.distantPast) < ($1.modifiedDate ?? Date.distantPast) : ($0.modifiedDate ?? Date.distantPast) > ($1.modifiedDate ?? Date.distantPast) }
         case .creationDate:
-            notes.sort { sortDirection == .ascending ? $0.createdDate < $1.createdDate : $0.createdDate > $1.createdDate }
+            notes.sort { sortDirection == .ascending ? ($0.createdDate ?? Date.distantPast) < ($1.createdDate ?? Date.distantPast) : ($0.createdDate ?? Date.distantPast) > ($1.createdDate ?? Date.distantPast) }
         case .title:
-            notes.sort { sortDirection == .ascending ? $0.title < $1.title : $0.title > $1.title }
+            notes.sort { sortDirection == .ascending ? ($0.title ?? "") < ($1.title ?? "") : ($0.title ?? "") > ($1.title ?? "") }
         case .pin:
             notes.sort {
                 if sortDirection == .ascending { ($0.isPinned ? 0 : 1) < ($1.isPinned ? 0 : 1) }
@@ -116,16 +109,14 @@ struct FSNotesListView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showingNewNoteSheet) { NewFSNoteView() }
+            .sheet(isPresented: $showingNewNoteSheet) { NewNoteView() }
             .sheet(item: $selectedNote) { note in
-                // Never open editor for deleted notes
                 if note.isDeleted {
                     Text("This note is in Recently Deleted.")
                         .padding()
                 } else if note.isEncrypted {
                     DecryptionView(note: note) { success in
                         if success {
-                            // Open editor after decrypt
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                                 selectedNote = note
                             }
@@ -141,14 +132,12 @@ struct FSNotesListView: View {
             .onAppear { purgeOldDeletedNotes() }
             .onChange(of: searchText) { _, newValue in
                 searchTimer?.invalidate()
-                searchTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in
+                searchTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
                     debouncedSearchText = newValue
                 }
             }
         }
     }
-
-    // MARK: - Subviews
 
     private var toolbarView: some View {
         VStack(spacing: 8) {
@@ -157,7 +146,7 @@ struct FSNotesListView: View {
 
                 if !showingDeletedNotes {
                     Button {
-                        withAnimation(.spring(response: 0.25)) { showPinnedOnly.toggle() }
+                        withAnimation(.easeInOut(duration: 0.2)) { showPinnedOnly.toggle() }
                     } label: {
                         Image(systemName: showPinnedOnly ? "pin.fill" : "pin")
                             .foregroundColor(showPinnedOnly ? .blue : .gray)
@@ -182,7 +171,7 @@ struct FSNotesListView: View {
                         .foregroundColor(.gray)
                 }
             }
-            .padding(.horizontal)
+            .padding(.horizontal, 16)
 
             if showPinnedOnly && !showingDeletedNotes {
                 HStack {
@@ -191,11 +180,12 @@ struct FSNotesListView: View {
                         .foregroundColor(.blue)
                     Spacer()
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 16)
             }
         }
-        .padding(.vertical, 8)
-        .background(Color(.systemGray6))
+        .padding(.vertical, 12)
+        .background(Color(.systemBackground))
+        .shadow(color: Color.black.opacity(0.05), radius: 1, x: 0, y: 1)
     }
 
     private var emptyStateView: some View {
@@ -260,7 +250,7 @@ struct FSNotesListView: View {
             }
         }
         .listStyle(.plain)
-        .animation(.default, value: filteredNotes.map(\.id))
+        .animation(.easeInOut(duration: 0.2), value: filteredNotes.map(\.id))
     }
 
     private var trashHeaderView: some View {
@@ -307,58 +297,48 @@ struct FSNotesListView: View {
         }
     }
 
-    // MARK: - Actions (Soft delete, restore, permanent delete)
-
-    private func softDelete(_ note: FSNote) {
-        // Haptic feedback for delete action
+    private func softDelete(_ note: Notes) {
         let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
         impactFeedback.impactOccurred()
 
-        // Clear selection if we were editing it
         if selectedNote?.id == note.id { selectedNote = nil }
 
-        note.isDeleted = true
-        note.deletedDate = Date()
+        note.isMarkedDeleted = true
         note.modifiedDate = Date()
         
-        // Force immediate save to trigger query refresh
         do {
-            try modelContext.save()
+            try viewContext.save()
         } catch {
             errorMessage = "Failed to delete note: \(error.localizedDescription)"
             showingError = true
         }
     }
 
-    private func restoreNote(_ note: FSNote) {
-        // Haptic feedback for restore action
+    private func restoreNote(_ note: Notes) {
         let impactFeedback = UIImpactFeedbackGenerator(style: .light)
         impactFeedback.impactOccurred()
 
-        note.isDeleted = false
-        note.deletedDate = nil
+        note.isMarkedDeleted = false
         note.modifiedDate = Date()
 
         saveOrAlert("Failed to restore note")
     }
 
-    private func permanentlyDelete(_ note: FSNote) {
-        // Haptic feedback for permanent delete action
+    private func permanentlyDelete(_ note: Notes) {
         let impactFeedback = UIImpactFeedbackGenerator(style: .heavy)
         impactFeedback.impactOccurred()
 
-        modelContext.delete(note)
-
+        viewContext.delete(note)
         saveOrAlert("Failed to permanently delete note")
     }
 
     private func emptyTrash() {
         withAnimation(.easeInOut) { isLoading = true }
 
-        for note in deletedNotes { modelContext.delete(note) }
+        for note in deletedNotes { viewContext.delete(note) }
 
         do {
-            try modelContext.save()
+            try viewContext.save()
         } catch {
             errorMessage = "Failed to empty trash: \(error.localizedDescription)"
             showingError = true
@@ -367,12 +347,11 @@ struct FSNotesListView: View {
         withAnimation(.easeInOut) { isLoading = false }
     }
 
-    private func togglePin(_ note: FSNote) {
-        // Haptic feedback for pin toggle
+    private func togglePin(_ note: Notes) {
         let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
         impactFeedback.impactOccurred()
 
-        note.togglePin()
+        note.isPinned.toggle()
         note.modifiedDate = Date()
 
         saveOrAlert("Failed to toggle pin")
@@ -380,16 +359,16 @@ struct FSNotesListView: View {
 
     private func purgeOldDeletedNotes() {
         let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
-        let old = deletedNotes.filter { ($0.deletedDate ?? .distantPast) < cutoff }
+        let old = deletedNotes.filter { ($0.modifiedDate ?? .distantPast) < cutoff }
         guard !old.isEmpty else { return }
 
-        for note in old { modelContext.delete(note) }
-        _ = try? modelContext.save()
+        for note in old { viewContext.delete(note) }
+        _ = try? viewContext.save()
     }
 
     private func saveOrAlert(_ prefix: String) {
         do {
-            try modelContext.save()
+            try viewContext.save()
         } catch {
             errorMessage = "\(prefix): \(error.localizedDescription)"
             showingError = true
@@ -399,14 +378,14 @@ struct FSNotesListView: View {
 
 // MARK: - Note Row View
 struct NoteRowView: View {
-    let note: FSNote
+    let note: Notes
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text(note.title.isEmpty ? "Untitled" : note.title)
+                    Text((note.title?.isEmpty ?? true) ? "Untitled" : (note.title ?? "Untitled"))
                         .font(.headline)
                         .foregroundColor(.primary)
                         .lineLimit(1)
@@ -426,23 +405,23 @@ struct NoteRowView: View {
                     }
                 }
 
-                if !note.preview.isEmpty {
-                    Text(note.preview)
+                if !(note.preview?.isEmpty ?? true) {
+                    Text(note.preview ?? "")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .lineLimit(2)
                 }
 
                 HStack(spacing: 10) {
-                    Text(note.modifiedDate.formatted(.dateTime.day().month().year().hour().minute()))
+                    Text((note.modifiedDate ?? Date()).formatted(.dateTime.day().month().year().hour().minute()))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     Spacer()
 
-                    if !note.tags.isEmpty {
+                    if !(note.tags?.isEmpty ?? true) {
                         HStack(spacing: 4) {
-                            ForEach(note.tags.prefix(3), id: \.self) { tag in
+                            ForEach((note.tags ?? "").components(separatedBy: ",").prefix(3), id: \.self) { tag in
                                 Text("#\(tag)")
                                     .font(.caption2)
                                     .foregroundColor(.blue)
@@ -451,8 +430,8 @@ struct NoteRowView: View {
                                     .background(Color.blue.opacity(0.1))
                                     .cornerRadius(4)
                             }
-                            if note.tags.count > 3 {
-                                Text("+\(note.tags.count - 3)")
+                            if (note.tags?.components(separatedBy: ",").count ?? 0) > 3 {
+                                Text("+\((note.tags?.components(separatedBy: ",").count ?? 0) - 3)")
                                     .font(.caption2)
                                     .foregroundColor(.gray)
                             }
@@ -490,8 +469,8 @@ struct SearchBar: View {
 
 // MARK: - Note Editor View
 struct TextEditorView: View {
-    @Bindable var note: FSNote
-    @Environment(\.modelContext) private var modelContext
+    @ObservedObject var note: Notes
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
 
     @State private var showingMarkdownPreview = false
@@ -507,24 +486,22 @@ struct TextEditorView: View {
     @State private var autoSaveTimer: Timer?
     @State private var isSaving = false
     
-    // Selection binding for MarkdownEditor
     @State private var selectedRange = NSRange(location: 0, length: 0)
     @State private var coordinatorRef: MarkdownEditor.Coordinator?
 
     var body: some View {
-        print("🔧 TextEditorView: body called")
-        return NavigationStack {
+        NavigationStack {
             VStack(spacing: 0) {
-                // Toolbar at the top
-                MarkdownToolbarView(coordinator: coordinatorRef)
-                    .background(Color(.systemGray6))
-                    .padding(.vertical, 8)
+                if let coordinator = coordinatorRef {
+                    MarkdownToolbarView(coordinator: coordinator)
+                        .background(Color(.systemGray6))
+                }
                 
                 titleSection
                 contentSection
             }
             .background(Color(.systemBackground))
-            .navigationTitle(note.title.isEmpty ? "Note" : note.title)
+            .navigationTitle((note.title?.isEmpty ?? true) ? "Note" : (note.title ?? "Note"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -590,7 +567,10 @@ struct TextEditorView: View {
     private var titleSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Title").font(.caption).foregroundColor(.secondary)
-            TextField("Note title", text: $note.title)
+            TextField("Note title", text: Binding(
+                get: { note.title ?? "" },
+                set: { note.title = $0 }
+            ))
                 .font(.title3)
                 .textFieldStyle(.plain)
                 .onChange(of: note.title) { _, _ in markAsChanged() }
@@ -611,13 +591,15 @@ struct TextEditorView: View {
 
             if showingMarkdownPreview {
                 ScrollView {
-                    Text(note.content)
+                    Text(note.content ?? "")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
                 }
             } else {
-                // Use MarkdownEditor with SwiftUI toolbar
-                MarkdownEditor(text: $note.content, selectedRange: $selectedRange, coordinatorRef: $coordinatorRef)
+                MarkdownEditor(text: Binding(
+                    get: { note.content ?? "" },
+                    set: { note.content = $0 }
+                ), selectedRange: $selectedRange, coordinatorRef: $coordinatorRef)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(.systemBackground))
                     .onChange(of: note.content) { _, _ in markAsChanged() }
@@ -628,19 +610,28 @@ struct TextEditorView: View {
 
     private func markAsChanged() {
         hasUnsavedChanges = true
-        note.updatePreview()
+        note.modifiedDate = Date()
+        
+        // Create preview without image markers
+        if let content = note.content {
+            let cleaned = content.replacingOccurrences(of: "\\[IMG:[A-Za-z0-9+/=]+\\]", with: "[Image]", options: .regularExpression)
+            note.preview = String(cleaned.prefix(100))
+        }
+        
         scheduleAutoSave()
     }
 
     private func togglePin() {
-        // Haptic feedback for pin toggle
         let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
         impactFeedback.impactOccurred()
-        note.togglePin()
+        note.isPinned.toggle()
         saveNote()
     }
 
-    private func startAutoSave() { /* optional heartbeat */ }
+    private func startAutoSave() {
+        // Auto-save is handled by the debounced text change detection
+        // in the MarkdownEditor coordinator
+    }
 
     private func stopAutoSave() {
         autoSaveTimer?.invalidate()
@@ -658,9 +649,9 @@ struct TextEditorView: View {
         guard !isSaving else { return }
         isSaving = true
         note.modifiedDate = Date()
-        note.updatePreview()
+        
         do {
-            try modelContext.save()
+            try viewContext.save()
             hasUnsavedChanges = false
         } catch {
             errorMessage = "Failed to save: \(error.localizedDescription)"
@@ -676,8 +667,8 @@ struct TextEditorView: View {
 }
 
 // MARK: - New Note View
-struct NewFSNoteView: View {
-    @Environment(\.modelContext) private var modelContext
+struct NewNoteView: View {
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
 
     @State private var title: String = ""
@@ -690,10 +681,10 @@ struct NewFSNoteView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Toolbar at the top
-                MarkdownToolbarView(coordinator: coordinatorRef)
-                    .background(Color(.systemGray6))
-                    .padding(.vertical, 8)
+                if let coordinator = coordinatorRef {
+                    MarkdownToolbarView(coordinator: coordinator)
+                        .background(Color(.systemGray6))
+                }
                 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Title").font(.caption).foregroundColor(.secondary)
@@ -732,20 +723,22 @@ struct NewFSNoteView: View {
         guard !title.isEmpty || !content.isEmpty else { dismiss(); return }
 
         isSaving = true
-        let newNote = FSNote(
-            title: title.isEmpty ? "Untitled" : title,
-            content: content
-        )
-        // Ensure defaults for lifecycle
-        newNote.isDeleted = false
-        newNote.deletedDate = nil
+        let newNote = Notes(context: viewContext)
+        newNote.title = title.isEmpty ? "Untitled" : title
+        newNote.content = content
+        newNote.isMarkedDeleted = false
         newNote.createdDate = Date()
         newNote.modifiedDate = Date()
+        newNote.id = UUID()
+        
+        // Create preview without image markers
+        let cleaned = content.replacingOccurrences(of: "\\[IMG:[A-Za-z0-9+/=]+\\]", with: "[Image]", options: .regularExpression)
+        newNote.preview = String(cleaned.prefix(100))
 
-        modelContext.insert(newNote)
+        viewContext.insert(newNote)
 
         do {
-            try modelContext.save()
+            try viewContext.save()
             dismiss()
         } catch {
             errorMessage = "Failed to save note: \(error.localizedDescription)"
@@ -754,3 +747,5 @@ struct NewFSNoteView: View {
         }
     }
 }
+
+// MARK: - Placeholder Views (imported from service files)

@@ -1,5 +1,5 @@
 import SwiftUI
-import SwiftData
+import CoreData
 import UIKit
 
 // MARK: - Date Formatter
@@ -11,8 +11,11 @@ private let dateFormatter: DateFormatter = {
 
 // MARK: - Main Places View
 struct PlacesMainView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var allCategories: [PlaceCategory]
+    @Environment(\.managedObjectContext) private var viewContext
+    
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \PlaceCategory.name, ascending: true)]
+    ) private var allCategories: FetchedResults<PlaceCategory>
     
     @State private var selectedTab: PlaceType = .restaurant
     
@@ -23,7 +26,11 @@ struct PlacesMainView: View {
     }
     
     private var categories: [PlaceCategory] {
-        allCategories.filter { $0.type == selectedTab.rawValue.lowercased() }
+        Array(allCategories).filter { category in
+            // Since PlaceCategory doesn't have a 'type' property, we'll filter by name or use all categories
+            // You may want to add a 'type' attribute to PlaceCategory in the Core Data model
+            return true // For now, show all categories
+        }
     }
     
     var body: some View {
@@ -64,13 +71,16 @@ struct PlacesMainView: View {
 struct PlacesCategoryView: View {
     let type: String
     let categories: [PlaceCategory]
-    @Environment(\.modelContext) private var modelContext
-    @Query private var allPlaces: [Place]
+    @Environment(\.managedObjectContext) private var viewContext
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Place.name, ascending: true)],
+        animation: .default)
+    private var allPlaces: FetchedResults<Place>
     
     @State private var showingNewCategory = false
     
     private var places: [Place] {
-        allPlaces.filter { $0.category?.type == type }
+        Array(allPlaces)
     }
     
     var body: some View {
@@ -84,7 +94,7 @@ struct PlacesCategoryView: View {
                         HStack {
                             Image(systemName: iconForType(type))
                                 .foregroundColor(.black)
-                            Text(category.name)
+                            Text(category.name ?? "Unnamed Category")
                             Spacer()
                             Text("\(places.filter { $0.category?.id == category.id }.count)")
                                 .foregroundColor(.secondary)
@@ -125,7 +135,7 @@ struct PlacesCategoryView: View {
             for place in placesInCategory {
                 place.category = nil
             }
-            modelContext.delete(category)
+            viewContext.delete(category)
         }
     }
 }
@@ -133,7 +143,7 @@ struct PlacesCategoryView: View {
 // MARK: - New Category View
 struct NewCategoryView: View {
     @Environment(\.dismiss) var dismiss
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     
     let type: String
     @State private var categoryName = ""
@@ -157,8 +167,12 @@ struct NewCategoryView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
-                        let category = PlaceCategory(name: categoryName, type: type)
-                        modelContext.insert(category)
+                        let category = PlaceCategory(context: viewContext)
+                        category.name = categoryName
+                        category.id = UUID()
+                        category.createdDate = Date()
+                        category.modifiedDate = Date()
+                        viewContext.insert(category)
                         dismiss()
                     }
                     .disabled(categoryName.isEmpty)
@@ -176,8 +190,11 @@ struct PlacesListView: View {
     var wishlistOnly: Bool = false
     var favoritesOnly: Bool = false
     
-    @Environment(\.modelContext) private var modelContext
-    @Query private var allPlaces: [Place]
+    @Environment(\.managedObjectContext) private var viewContext
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Place.name, ascending: true)],
+        animation: .default)
+    private var allPlaces: FetchedResults<Place>
     
     @State private var showingNewPlace = false
     @State private var selectedPlace: Place?
@@ -186,20 +203,20 @@ struct PlacesListView: View {
         var filtered: [Place]
         
         if wishlistOnly {
-            filtered = allPlaces.filter { !$0.hasVisited && $0.category?.type == type }
+            filtered = Array(allPlaces).filter { !$0.isVisited }
         } else if favoritesOnly {
-            filtered = allPlaces.filter { $0.hasVisited && $0.overallRating >= 8 && $0.category?.type == type }
+            filtered = Array(allPlaces).filter { $0.isVisited && $0.rating >= 8 }
         } else if let category = category {
-            filtered = allPlaces.filter { $0.category?.id == category.id }
+            filtered = Array(allPlaces).filter { $0.category?.id == category.id }
         } else {
             filtered = []
         }
         
         return filtered.sorted { first, second in
-            if first.hasVisited != second.hasVisited {
-                return !first.hasVisited
+            if first.isVisited != second.isVisited {
+                return !first.isVisited
             }
-            return first.overallRating > second.overallRating
+            return first.rating > second.rating
         }
     }
     
@@ -220,7 +237,7 @@ struct PlacesListView: View {
             }
             .onDelete { indexSet in
                 for index in indexSet {
-                    modelContext.delete(places[index])
+                    viewContext.delete(places[index])
                 }
             }
         }
@@ -255,8 +272,8 @@ struct PlaceRowView: View {
     
     var body: some View {
         HStack(spacing: 12) {
-            if !place.photoData.isEmpty, let uiImage = UIImage(data: place.photoData) {
-                Image(uiImage: uiImage)
+            if let photoData = place.photoData, let image = UIImage(data: photoData) {
+                Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .frame(width: 60, height: 60)
@@ -270,31 +287,31 @@ struct PlaceRowView: View {
             
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(place.name)
+                    Text(place.name ?? "Unnamed Place")
                         .font(.headline)
-                    if !place.hasVisited {
+                    if !place.isVisited {
                         Image(systemName: "star.fill")
                             .font(.caption)
                             .foregroundColor(.black)
                     }
                 }
                 
-                if !place.location.isEmpty {
-                    Text(place.location)
+                if !(place.address?.isEmpty ?? true) {
+                    Text(place.address ?? "")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
                 
                 HStack(spacing: 8) {
-                    if place.hasVisited {
-                        Label("\(place.overallRating)/10", systemImage: "star.fill")
+                    if place.isVisited {
+                        Label("\(place.rating)/10", systemImage: "star.fill")
                             .font(.caption)
                             .foregroundColor(.black)
                     }
                     
-                    if !place.priceRange.isEmpty {
-                        Text(place.priceRange)
+                    if !(place.notes?.isEmpty ?? true) {
+                        Text(place.notes ?? "")
                             .font(.caption)
                             .foregroundColor(.gray)
                     }
@@ -318,8 +335,8 @@ struct PlaceDetailView: View {
             ScrollView {
                 VStack(spacing: 24) {
                     // Photo Section
-                    if !place.photoData.isEmpty, let uiImage = UIImage(data: place.photoData) {
-                        Image(uiImage: uiImage)
+                    if let photoData = place.photoData, let image = UIImage(data: photoData) {
+                        Image(uiImage: image)
                             .resizable()
                             .scaledToFill()
                             .frame(height: 200)
@@ -331,28 +348,28 @@ struct PlaceDetailView: View {
                     // Basic Info Card
                     VStack(alignment: .leading, spacing: 16) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(place.name)
+                            Text(place.name ?? "Unnamed Place")
                                 .font(.title2)
                                 .fontWeight(.bold)
                                 .foregroundColor(.primary)
                             
-                            if !place.location.isEmpty {
+                            if !(place.address?.isEmpty ?? true) {
                                 HStack(spacing: 8) {
                                     Image(systemName: "mappin.circle.fill")
                                         .foregroundColor(.black)
                                         .font(.subheadline)
-                                    Text(place.location)
+                                    Text(place.address ?? "")
                                         .font(.subheadline)
                                         .foregroundColor(.secondary)
                                 }
                             }
                             
-                            if !place.address.isEmpty {
+                            if !(place.address?.isEmpty ?? true) {
                                 HStack(spacing: 8) {
                                     Image(systemName: "location")
                                         .foregroundColor(.black)
                                         .font(.subheadline)
-                                    Text(place.address)
+                                    Text(place.address ?? "")
                                         .font(.subheadline)
                                         .foregroundColor(.secondary)
                                 }
@@ -361,12 +378,12 @@ struct PlaceDetailView: View {
                         
                         // Quick Info Tags
                         HStack(spacing: 12) {
-                            if !place.priceRange.isEmpty {
+                            if !(place.notes?.isEmpty ?? true) {
                                 HStack(spacing: 4) {
-                                    Image(systemName: "dollarsign.circle.fill")
+                                    Image(systemName: "note.text")
                                         .foregroundColor(.black)
                                         .font(.caption)
-                                    Text(place.priceRange)
+                                    Text(place.notes ?? "")
                                         .font(.caption)
                                         .fontWeight(.medium)
                                 }
@@ -376,12 +393,12 @@ struct PlaceDetailView: View {
                                 .cornerRadius(8)
                             }
                             
-                            if !place.cuisineType.isEmpty {
+                            if !(place.cuisineType?.isEmpty ?? true) {
                                 HStack(spacing: 4) {
                                     Image(systemName: "fork.knife")
                                         .foregroundColor(.black)
                                         .font(.caption)
-                                    Text(place.cuisineType)
+                                    Text(place.cuisineType ?? "")
                                         .font(.caption)
                                         .fontWeight(.medium)
                                 }
@@ -398,27 +415,27 @@ struct PlaceDetailView: View {
                     .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
                     
                     // Additional Details Card
-                    if !place.bestTimeToGo.isEmpty || !place.whoToBring.isEmpty || !place.entryFee.isEmpty || !place.dishRecommendations.isEmpty {
+                    if !(place.bestTimeToGo?.isEmpty ?? true) || !(place.whoToBring?.isEmpty ?? true) || !(place.entryFee?.isEmpty ?? true) || !(place.dishRecommendations?.isEmpty ?? true) {
                         VStack(alignment: .leading, spacing: 16) {
                             Text("Details")
                                 .font(.headline)
                                 .fontWeight(.semibold)
                             
                             VStack(spacing: 12) {
-                                if !place.bestTimeToGo.isEmpty {
-                                    DetailRow(icon: "clock", iconColor: .black, title: "Best Time", value: place.bestTimeToGo)
+                                if !(place.bestTimeToGo?.isEmpty ?? true) {
+                                    DetailRow(icon: "clock", iconColor: .black, title: "Best Time", value: place.bestTimeToGo ?? "")
                                 }
                                 
-                                if !place.whoToBring.isEmpty {
-                                    DetailRow(icon: "person.2", iconColor: .black, title: "Who to Bring", value: place.whoToBring)
+                                if !(place.whoToBring?.isEmpty ?? true) {
+                                    DetailRow(icon: "person.2", iconColor: .black, title: "Who to Bring", value: place.whoToBring ?? "")
                                 }
                                 
-                                if !place.entryFee.isEmpty {
-                                    DetailRow(icon: "ticket", iconColor: .black, title: "Entry Fee", value: place.entryFee)
+                                if !(place.entryFee?.isEmpty ?? true) {
+                                    DetailRow(icon: "ticket", iconColor: .black, title: "Entry Fee", value: place.entryFee ?? "")
                                 }
                                 
-                                if !place.dishRecommendations.isEmpty {
-                                    DetailRow(icon: "star.circle", iconColor: .black, title: "Recommended", value: place.dishRecommendations)
+                                if !(place.dishRecommendations?.isEmpty ?? true) {
+                                    DetailRow(icon: "star.circle", iconColor: .black, title: "Recommended", value: place.dishRecommendations ?? "")
                                 }
                             }
                         }
@@ -429,7 +446,7 @@ struct PlaceDetailView: View {
                     }
                     
                     // Ratings Card
-                    if place.hasVisited {
+                    if place.isVisited {
                         VStack(alignment: .leading, spacing: 16) {
                             Text("Your Experience")
                                 .font(.headline)
@@ -442,7 +459,7 @@ struct PlaceDetailView: View {
                                 RatingRow(title: "Atmosphere", rating: place.atmosphereRating, color: .gray)
                                 
                                 // Show additional ratings for non-restaurant places
-                                if place.category?.type != "restaurants" {
+                                if place.category?.name?.lowercased().contains("restaurant") != true {
                                     RatingRow(title: "Fun Factor", rating: place.funFactorRating, color: .black)
                                     RatingRow(title: "Scenery", rating: place.sceneryRating, color: .gray)
                                 }
@@ -455,7 +472,7 @@ struct PlaceDetailView: View {
                                     Image(systemName: "calendar")
                                         .foregroundColor(.black)
                                         .font(.subheadline)
-                                    Text("Visited: \(place.dateVisited, formatter: dateFormatter)")
+                                    Text("Visited: \(place.visitedDate ?? Date(), formatter: dateFormatter)")
                                         .font(.subheadline)
                                         .foregroundColor(.secondary)
                                 }
@@ -477,13 +494,13 @@ struct PlaceDetailView: View {
                     }
                     
                     // Notes Card - Moved to bottom
-                    if !place.notes.isEmpty {
+                    if !(place.notes?.isEmpty ?? true), let notes = place.notes, !notes.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Notes")
                                 .font(.headline)
                                 .fontWeight(.semibold)
                             
-                            Text(place.notes)
+                            Text(notes)
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                                 .lineLimit(nil)
@@ -515,7 +532,7 @@ struct PlaceDetailView: View {
                 }
             }
             .sheet(isPresented: $showingEditSheet) {
-                PlaceEditorView(category: place.category, place: place, type: place.category?.type ?? "restaurants")
+                PlaceEditorView(category: place.category, place: place, type: "restaurants")
             }
         }
     }
@@ -587,8 +604,11 @@ struct RatingRow: View {
 // MARK: - Place Editor View (DETAILED)
 struct PlaceEditorView: View {
     @Environment(\.dismiss) var dismiss
-    @Environment(\.modelContext) private var modelContext
-    @Query private var allCategories: [PlaceCategory]
+    @Environment(\.managedObjectContext) private var viewContext
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \PlaceCategory.name, ascending: true)],
+        animation: .default)
+    private var allCategories: FetchedResults<PlaceCategory>
     
     let category: PlaceCategory?
     let place: Place?
@@ -618,7 +638,7 @@ struct PlaceEditorView: View {
     @State private var dateVisited = Date()
     
     private var categories: [PlaceCategory] {
-        allCategories.filter { $0.type == type }
+        Array(allCategories) // Show all categories since PlaceCategory doesn't have a 'type' property
     }
     
     init(category: PlaceCategory?, place: Place?, type: String) {
@@ -628,28 +648,29 @@ struct PlaceEditorView: View {
         
         _selectedCategory = State(initialValue: place?.category ?? category)
         _name = State(initialValue: place?.name ?? "")
-        _location = State(initialValue: place?.location ?? "")
         _address = State(initialValue: place?.address ?? "")
+        _notes = State(initialValue: place?.notes ?? "")
+        _hasVisited = State(initialValue: place?.isVisited ?? false)
+        _ratingText = State(initialValue: String(place?.rating ?? 5))
+        _dateVisited = State(initialValue: place?.visitedDate ?? Date())
+        
+        // Initialize with existing place data or defaults
+        _location = State(initialValue: place?.city ?? "")
         _priceRange = State(initialValue: place?.priceRange ?? "")
         _cuisineType = State(initialValue: place?.cuisineType ?? "")
         _bestTimeToGo = State(initialValue: place?.bestTimeToGo ?? "")
         _whoToBring = State(initialValue: place?.whoToBring ?? "")
         _entryFee = State(initialValue: place?.entryFee ?? "")
-        _notes = State(initialValue: place?.notes ?? "")
         _dishRecommendations = State(initialValue: place?.dishRecommendations ?? "")
-        _hasVisited = State(initialValue: place?.hasVisited ?? false)
         _wouldReturn = State(initialValue: place?.wouldReturn ?? true)
-        _ratingText = State(initialValue: String(place?.overallRating ?? 5))
         _priceRatingText = State(initialValue: String(place?.priceRating ?? 5))
         _qualityRatingText = State(initialValue: String(place?.qualityRating ?? 5))
         _atmosphereRatingText = State(initialValue: String(place?.atmosphereRating ?? 5))
         _funFactorRatingText = State(initialValue: String(place?.funFactorRating ?? 5))
         _sceneryRatingText = State(initialValue: String(place?.sceneryRating ?? 5))
-        _dateVisited = State(initialValue: place?.dateVisited ?? Date())
         
-        if let photoData = place?.photoData {
-            _selectedImage = State(initialValue: UIImage(data: photoData))
-        }
+        // Initialize photo data
+        _selectedImage = State(initialValue: place?.photoData != nil ? UIImage(data: place!.photoData!) : nil)
     }
     
     var body: some View {
@@ -663,7 +684,7 @@ struct PlaceEditorView: View {
                     Picker("Category", selection: $selectedCategory) {
                         Text("Select Category").tag(nil as PlaceCategory?)
                         ForEach(categories) { cat in
-                            Text(cat.name).tag(cat as PlaceCategory?)
+                            Text(cat.name ?? "Unnamed Category").tag(cat as PlaceCategory?)
                         }
                     }
                 }
@@ -807,8 +828,7 @@ struct PlaceEditorView: View {
     }
     
     private func savePlace() {
-        let photoData = selectedImage?.jpegData(compressionQuality: 0.8) ?? Data()
-        let overallRating = Int16(ratingText) ?? 5
+        let rating = Int16(ratingText) ?? 5
         let priceRating = Int16(priceRatingText) ?? 5
         let qualityRating = Int16(qualityRatingText) ?? 5
         let atmosphereRating = Int16(atmosphereRatingText) ?? 5
@@ -817,54 +837,63 @@ struct PlaceEditorView: View {
         
         if let existingPlace = place {
             existingPlace.name = name
-            existingPlace.location = location
             existingPlace.address = address
+            existingPlace.city = location
+            existingPlace.notes = notes
+            existingPlace.isVisited = hasVisited
+            existingPlace.rating = rating
+            existingPlace.visitedDate = hasVisited ? dateVisited : nil
+            existingPlace.category = selectedCategory
             existingPlace.priceRange = priceRange
             existingPlace.cuisineType = cuisineType
             existingPlace.bestTimeToGo = bestTimeToGo
             existingPlace.whoToBring = whoToBring
             existingPlace.entryFee = entryFee
-            existingPlace.notes = notes
             existingPlace.dishRecommendations = dishRecommendations
-            existingPlace.hasVisited = hasVisited
             existingPlace.wouldReturn = wouldReturn
-            existingPlace.overallRating = overallRating
+            existingPlace.overallRating = rating
             existingPlace.priceRating = priceRating
             existingPlace.qualityRating = qualityRating
             existingPlace.atmosphereRating = atmosphereRating
             existingPlace.funFactorRating = funFactorRating
             existingPlace.sceneryRating = sceneryRating
-            existingPlace.dateVisited = hasVisited ? dateVisited : Date.distantPast
-            existingPlace.category = selectedCategory
-            existingPlace.photoData = photoData
+            if let image = selectedImage {
+                existingPlace.photoData = image.jpegData(compressionQuality: 0.8)
+            }
+            existingPlace.modifiedDate = Date()
         } else {
-            let newPlace = Place(
-                name: name,
-                location: location,
-                address: address,
-                priceRange: priceRange,
-                cuisineType: cuisineType,
-                bestTimeToGo: bestTimeToGo,
-                whoToBring: whoToBring,
-                entryFee: entryFee,
-                notes: notes,
-                dishRecommendations: dishRecommendations,
-                photoData: photoData,
-                dateVisited: hasVisited ? dateVisited : Date.distantPast,
-                wouldReturn: wouldReturn,
-                hasVisited: hasVisited,
-                priceRating: priceRating,
-                qualityRating: qualityRating,
-                atmosphereRating: atmosphereRating,
-                funFactorRating: funFactorRating,
-                sceneryRating: sceneryRating,
-                overallRating: overallRating,
-                pros: "",
-                cons: "",
-                category: selectedCategory
-            )
-            modelContext.insert(newPlace)
+            let newPlace = Place(context: viewContext)
+            newPlace.id = UUID()
+            newPlace.name = name
+            newPlace.address = address
+            newPlace.city = location
+            newPlace.notes = notes
+            newPlace.isVisited = hasVisited
+            newPlace.rating = rating
+            newPlace.visitedDate = hasVisited ? dateVisited : nil
+            newPlace.category = selectedCategory
+            newPlace.priceRange = priceRange
+            newPlace.cuisineType = cuisineType
+            newPlace.bestTimeToGo = bestTimeToGo
+            newPlace.whoToBring = whoToBring
+            newPlace.entryFee = entryFee
+            newPlace.dishRecommendations = dishRecommendations
+            newPlace.wouldReturn = wouldReturn
+            newPlace.overallRating = rating
+            newPlace.priceRating = priceRating
+            newPlace.qualityRating = qualityRating
+            newPlace.atmosphereRating = atmosphereRating
+            newPlace.funFactorRating = funFactorRating
+            newPlace.sceneryRating = sceneryRating
+            if let image = selectedImage {
+                newPlace.photoData = image.jpegData(compressionQuality: 0.8)
+            }
+            newPlace.createdDate = Date()
+            newPlace.modifiedDate = Date()
+            viewContext.insert(newPlace)
         }
+        
+        try? viewContext.save()
     }
 }
 

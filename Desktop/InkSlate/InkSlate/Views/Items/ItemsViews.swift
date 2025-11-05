@@ -6,15 +6,14 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 // MARK: - Modern Homescreen Views
 struct ItemsListView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+    @Environment(\.managedObjectContext) private var viewContext
     
     var body: some View {
-        // ✅ OPTIMIZED: Single TimelineView instead of multiple timers
+        
         TimelineView(.periodic(from: .now, by: 1.0)) { context in
             VStack(spacing: 0) {
                 // Header with time/date and profile
@@ -33,6 +32,7 @@ struct ModernHomeHeader: View {
     let currentTime: Date
     @State private var showingProfile = false
     @State private var showingSettings = false
+    @State private var showingProfileCustomization = false
     @StateObject private var profileService = ProfileService()
     @StateObject private var dailyQuoteService = DailyQuoteService()
     @EnvironmentObject var shared: SharedStateManager
@@ -108,7 +108,7 @@ struct ModernHomeHeader: View {
                         )
 
                         // Profile on left side - smaller and more minimalistic
-                        Button(action: { showingProfile = true }) {
+                        Button(action: { showingProfileCustomization = true }) {
                             ZStack {
                                 Circle()
                                     .fill(DesignSystem.Colors.accent)
@@ -132,9 +132,9 @@ struct ModernHomeHeader: View {
                         .buttonStyle(PlainButtonStyle())
                         .offset(x: -15, y: -15) // overlap effect from left
                     }
-                    .frame(maxWidth: UIScreen.main.bounds.width * 0.9) // 90% of screen width - longer
+                    .frame(maxWidth: UIScreen.main.bounds.width * 0.85) // 85% of screen width - moved more to the right
                 }
-                .padding(.leading, 40) // Moved card slightly to the right
+                .padding(.leading, 60) // Moved card further to the right
                 .onTapGesture { showingSettings = true }
             }
         }
@@ -145,12 +145,15 @@ struct ModernHomeHeader: View {
         .sheet(isPresented: $showingSettings) {
             SettingsView()
         }
+        .sheet(isPresented: $showingProfileCustomization) {
+            ProfileCustomizationView(profileService: profileService)
+        }
     }
 }
 
 // MARK: - Modern Home Main View
 struct ModernHomeMainView: View {
-    let currentTime: Date // ✅ OPTIMIZED: Receives time from parent TimelineView
+    let currentTime: Date 
     
     var body: some View {
         VStack(spacing: 0) {
@@ -167,7 +170,7 @@ struct ModernBottomTimeDisplay: View {
     let currentTime: Date
     @State private var isVisible = false
     
-    // ✅ OPTIMIZED: Static cached formatters instead of creating new ones
+    
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"

@@ -81,8 +81,6 @@ class ErrorHandlingService: ObservableObject {
             self.showingError = true
         }
         
-        // Log error for debugging
-        print("Error in \(context): \(error)")
     }
     
     func clearError() {

@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import SwiftData
 
 // MARK: - Main Content View
 struct ContentView: View {
@@ -27,6 +26,7 @@ struct ContentView: View {
                                 isHovering: $isHovering
                             )
                         }
+                        
                     })
             }
             .overlay(
@@ -57,12 +57,11 @@ struct MainContentView: View {
     let selectedView: MenuViewType
     
     var body: some View {
-        Group {
-            switch selectedView {
+        switch selectedView {
             case .items:
                 ItemsListView()
             case .notes:
-                FSNotesListView()
+                NotesListView()
             case .mindMaps:
                 MindMapListView()
             case .journal:
@@ -71,21 +70,20 @@ struct MainContentView: View {
                 TodoMainView()
             case .budget:
                 BudgetMainView()
-            case .places:
-                PlacesMainView()
-            case .watchlist:
-                WatchlistMainView()
-            case .quotes:
-                ModernQuotesMainView()
             case .recipes:
                 ModernRecipeMainView()
+            case .places:
+                PlacesMainView()
+            case .quotes:
+                ModernQuotesMainView()
             case .calendar:
                 CalendarMainView()
+            case .wantToWatch:
+                WantToWatchMainView()
             case .settings:
                 SettingsView()
             case .profile:
                 ProfileMainView()
-            }
         }
     }
 }
@@ -110,7 +108,9 @@ struct MenuOverlay: View {
 }
 
 
+
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+        .environment(\.managedObjectContext, PersistenceController.shared.container.viewContext)
+        .environmentObject(SharedStateManager.shared)
 }

@@ -17,7 +17,7 @@ struct SplashScreenView: View {
     
     var body: some View {
         ZStack {
-            // Background
+            
             DesignSystem.Colors.background
                 .ignoresSafeArea()
             

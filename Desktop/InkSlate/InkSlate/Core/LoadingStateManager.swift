@@ -6,8 +6,8 @@
 //
 
 import SwiftUI
-import SwiftData
 import Combine
+import CoreData
 
 // MARK: - Loading State Manager
 class LoadingStateManager: ObservableObject {
@@ -32,16 +32,16 @@ class LoadingStateManager: ObservableObject {
 // MARK: - Auto Save Manager
 class AutoSaveManager: ObservableObject {
     private var saveTimer: Timer?
-    private let debounceInterval: TimeInterval = 3.0 // Changed from 1.0 to 3.0 seconds to reduce CloudKit sync frequency by 66%
+    private let debounceInterval: TimeInterval = 15.0 
     private var pendingSave = false
     private var lastSaveTime = Date()
-    private var modelContext: ModelContext?
+    private var managedObjectContext: NSManagedObjectContext?
     
     @Published var isSaving = false
     @Published var lastSaveStatus = "Ready"
     
-    func setModelContext(_ context: ModelContext) {
-        self.modelContext = context
+    func setManagedObjectContext(_ context: NSManagedObjectContext) {
+        self.managedObjectContext = context
     }
     
     func scheduleSave() {
@@ -55,35 +55,33 @@ class AutoSaveManager: ObservableObject {
     private func performSave() {
         guard pendingSave else { return }
         
+        
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.isSaving = true
             self.lastSaveStatus = "Saving..."
         }
         
-        // Actually save to SwiftData
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            // Perform the actual save
             do {
-                try self.modelContext?.save()
-                self.pendingSave = false
-                self.lastSaveTime = Date()
-                self.isSaving = false
-                self.lastSaveStatus = "Saved at \(DateFormatter.timeFormatter.string(from: self.lastSaveTime))"
-                print("💾 AutoSaveManager: Successfully saved changes to iCloud at \(self.lastSaveTime)")
-            } catch {
-                self.isSaving = false
-                self.lastSaveStatus = "Save failed"
-                print("❌ AutoSaveManager: Failed to save changes - \(error.localizedDescription)")
                 
-                // Log additional error details if available
-                if let nsError = error as NSError? {
-                    print("❌ AutoSaveManager: Error domain: \(nsError.domain), code: \(nsError.code)")
-                    if !nsError.userInfo.isEmpty {
-                        print("❌ AutoSaveManager: Error details: \(nsError.userInfo)")
-                    }
+                try self.managedObjectContext?.save()
+                
+                DispatchQueue.main.async {
+                    self.pendingSave = false
+                    self.lastSaveTime = Date()
+                    self.isSaving = false
+                    self.lastSaveStatus = "Saved at \(DateFormatter.timeFormatter.string(from: self.lastSaveTime))"
+                    // Successfully saved changes
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isSaving = false
+                    self.lastSaveStatus = "Save failed"
+                    // Handle save error silently
                 }
             }
         }
@@ -94,10 +92,11 @@ class AutoSaveManager: ObservableObject {
         performSave()
     }
     
-    // ✅ OPTIMIZED: Proper cleanup to prevent memory leaks
+    
     deinit {
         saveTimer?.invalidate()
         saveTimer = nil
+        
     }
 }
 
@@ -111,14 +110,14 @@ extension DateFormatter {
 }
 
 // MARK: - Model Context Extensions
-extension ModelContext {
+extension NSManagedObjectContext {
     func saveWithDebounce(using autoSaveManager: AutoSaveManager) {
-        autoSaveManager.setModelContext(self)
+        autoSaveManager.setManagedObjectContext(self)
         autoSaveManager.scheduleSave()
         do {
             try self.save()
         } catch {
-            print("Error saving with debounce: \(error)")
+            
         }
     }
     
@@ -126,11 +125,11 @@ extension ModelContext {
         do {
             try self.save()
         } catch {
-            print("Error force saving: \(error)")
+            
         }
     }
     
-    // ✅ OPTIMIZED: Batch multiple operations with single save
+    
     func performBatch(_ operation: () throws -> Void) throws {
         try operation()
         if hasChanges {
@@ -138,11 +137,34 @@ extension ModelContext {
         }
     }
     
-    // ✅ OPTIMIZED: Async batch operations
+    
     func performBatchAsync(_ operation: @escaping () throws -> Void) async throws {
-        try operation()
-        if hasChanges {
-            try save()
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try operation()
+                    if self.hasChanges {
+                        try self.save()
+                    }
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+    
+    
+    func performBatchWithDebounce(_ operation: @escaping () throws -> Void, debounceTime: TimeInterval = 2.0) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + debounceTime) {
+            do {
+                try operation()
+                if self.hasChanges {
+                    try self.save()
+                }
+            } catch {
+                // Handle batch operation error silently
+            }
         }
     }
 }

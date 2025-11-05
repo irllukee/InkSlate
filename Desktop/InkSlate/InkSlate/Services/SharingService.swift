@@ -19,11 +19,16 @@ class SharingService: ObservableObject {
     
     private init() {}
     
+    
+    deinit {
+        
+    }
+    
     // MARK: - Share Note
     
-    func shareNote(_ note: FSNote, from view: UIViewController) {
+    func shareNote(_ note: Notes, from view: UIViewController) {
         let activityViewController = UIActivityViewController(
-            activityItems: [note.content],
+            activityItems: [note.content ?? ""],
             applicationActivities: nil
         )
         
@@ -39,14 +44,14 @@ class SharingService: ObservableObject {
     
     // MARK: - Export as HTML
     
-    func exportAsHTML(_ note: FSNote) -> String {
+    func exportAsHTML(_ note: Notes) -> String {
         let html = """
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>\(note.title)</title>
+            <title>\(note.title ?? "Untitled Note")</title>
             <style>
                 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
                 h1, h2, h3 { color: #333; }
@@ -57,8 +62,8 @@ class SharingService: ObservableObject {
             </style>
         </head>
         <body>
-            <h1>\(note.title)</h1>
-            \(markdownToHTML(note.content))
+            <h1>\(note.title ?? "Untitled Note")</h1>
+            \(markdownToHTML(note.content ?? ""))
         </body>
         </html>
         """
@@ -68,13 +73,13 @@ class SharingService: ObservableObject {
     
     // MARK: - Export as Markdown
     
-    func exportAsMarkdown(_ note: FSNote) -> String {
-        return "# \(note.title)\n\n\(note.content)"
+    func exportAsMarkdown(_ note: Notes) -> String {
+        return "# \(note.title ?? "")\n\n\(note.content ?? "")"
     }
     
     // MARK: - Export as PDF
     
-    func exportAsPDF(_ note: FSNote) -> Data? {
+    func exportAsPDF(_ note: Notes) -> Data? {
         let html = exportAsHTML(note)
         
         let printFormatter = UIMarkupTextPrintFormatter(markupText: html)
@@ -145,7 +150,7 @@ struct ShareSheet: UIViewControllerRepresentable {
 
 // MARK: - Export Options View
 struct ExportOptionsView: View {
-    let note: FSNote
+    let note: Notes
     @Environment(\.dismiss) var dismiss
     @State private var showingShareSheet = false
     @State private var shareItems: [Any] = []
@@ -163,7 +168,7 @@ struct ExportOptionsView: View {
                 
                 VStack(spacing: 16) {
                     Button("Share as Text") {
-                        shareItems = [note.content]
+                        shareItems = [note.content ?? ""]
                         showingShareSheet = true
                     }
                     .buttonStyle(.bordered)

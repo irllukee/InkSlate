@@ -16,11 +16,11 @@ enum MenuViewType: String, CaseIterable {
     case journal = "Journal"
     case todo = "To-Do"
     case budget = "Budget"
-    case places = "Places"
-    case watchlist = "Watchlist"
-    case quotes = "Quotes"
     case recipes = "Recipes"
+    case places = "Places"
+    case quotes = "Quotes"
     case calendar = "Calendar"
+    case wantToWatch = "Want to Watch"
     case settings = "Settings"
     case profile = "Profile"
     
@@ -30,13 +30,13 @@ enum MenuViewType: String, CaseIterable {
         case .notes: return "note.text"
         case .mindMaps: return "brain.head.profile"
         case .journal: return "book.closed"
-        case .todo: return "checklist"
-        case .budget: return "chart.pie.fill"
-        case .places: return "mappin.and.ellipse"
-        case .watchlist: return "tv"
-        case .quotes: return "quote.bubble"
-        case .recipes: return "fork.knife"
-        case .calendar: return "calendar"
+            case .todo: return "checklist"
+            case .budget: return "chart.pie.fill"
+            case .recipes: return "fork.knife"
+            case .places: return "mappin.and.ellipse"
+            case .quotes: return "quote.bubble"
+            case .calendar: return "calendar"
+        case .wantToWatch: return "tv"
         case .settings: return "gear"
         case .profile: return "person.fill"
         }
@@ -229,5 +229,6 @@ struct SideMenu: View {
             hiddenItems = Set(hiddenItemsData.compactMap { MenuViewType(rawValue: $0) })
             visibleMenuItems = visibleMenuItems.filter { !hiddenItems.contains($0) }
         }
+        
     }
 }

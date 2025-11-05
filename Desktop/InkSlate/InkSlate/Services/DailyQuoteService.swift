@@ -2,11 +2,8 @@
 //  DailyQuoteService.swift
 //  InkSlate
 //
-//  Created by AI Assistant on 12/19/24.
-//
 
 import SwiftUI
-import SwiftData
 
 // MARK: - Daily Quote Service
 class DailyQuoteService: ObservableObject {
@@ -625,6 +622,11 @@ class DailyQuoteService: ObservableObject {
         loadDailyQuote()
     }
     
+    
+    deinit {
+        
+    }
+    
     func loadDailyQuote() {
         let today = Calendar.current.startOfDay(for: Date())
         let lastQuoteDate = userDefaults.object(forKey: lastQuoteDateKey) as? Date ?? Date.distantPast
@@ -668,12 +670,13 @@ class DailyQuoteService: ObservableObject {
 
 // MARK: - Daily Quote Model
 struct DailyQuote: Identifiable, Codable {
-    let id = UUID()
+    let id: UUID
     let text: String
     let author: String
     let category: String
     
     init(text: String, author: String, category: String) {
+        self.id = UUID()
         self.text = text
         self.author = author
         self.category = category

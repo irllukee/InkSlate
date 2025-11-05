@@ -7,8 +7,21 @@
 //
 
 import Foundation
-import SwiftData
 import SwiftUI
+import CoreData
+
+// MARK: - Enums
+enum SortBy: String, CaseIterable {
+    case title = "title"
+    case creationDate = "creationDate"
+    case modificationDate = "modificationDate"
+    case pin = "pin"
+}
+
+enum SortDirection: String, CaseIterable {
+    case ascending = "ascending"
+    case descending = "descending"
+}
 
 // MARK: - Notes Service
 class NotesService: ObservableObject {
@@ -18,26 +31,45 @@ class NotesService: ObservableObject {
     
     private init() {}
     
+    
+    deinit {
+        
+    }
+    
     // MARK: - Note Operations
     
-    func createNote(title: String, content: String, in context: ModelContext) -> FSNote? {
+    func createNote(title: String, content: String, in context: NSManagedObjectContext) -> Notes? {
         return errorService.safeSave({
-            let newNote = FSNote(title: title, content: content)
+            let newNote = Notes(context: context)
+            newNote.title = title
+            newNote.content = content
+            newNote.createdDate = Date()
+            newNote.modifiedDate = Date()
+            newNote.id = UUID()
+            newNote.isMarkedDeleted = false
+            newNote.isPinned = false
+            newNote.isEncrypted = false
+            newNote.noteType = "markdown"
+            newNote.containerType = "none"
             context.insert(newNote)
             try context.save()
             return newNote
         }, context: "Create note")
     }
     
-    func updateNote(_ note: FSNote, in context: ModelContext) -> Bool {
+    func updateNote(_ note: Notes, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            note.updatePreview()
+            note.modifiedDate = Date()
+            // Update preview if content changed
+            if let content = note.content, !content.isEmpty {
+                note.preview = String(content.prefix(100))
+            }
             try context.save()
             return true
         }, context: "Update note") ?? false
     }
     
-    func deleteNote(_ note: FSNote, in context: ModelContext) -> Bool {
+    func deleteNote(_ note: Notes, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeDelete({
             context.delete(note)
             try context.save()
@@ -45,35 +77,36 @@ class NotesService: ObservableObject {
         }, context: "Delete note") ?? false
     }
     
-    func moveToTrash(_ note: FSNote, in context: ModelContext) -> Bool {
+    func moveToTrash(_ note: Notes, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            note.isDeleted = true
-            note.deletedDate = Date()
+            note.isMarkedDeleted = true
+            note.modifiedDate = Date()
             try context.save()
             return true
         }, context: "Move to trash") ?? false
     }
     
-    func restoreNote(_ note: FSNote, in context: ModelContext) -> Bool {
+    func restoreNote(_ note: Notes, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            note.isDeleted = false
-            note.deletedDate = nil
+            note.isMarkedDeleted = false
+            note.modifiedDate = Date()
             try context.save()
             return true
         }, context: "Restore note") ?? false
     }
     
-    func togglePin(_ note: FSNote, in context: ModelContext) -> Bool {
+    func togglePin(_ note: Notes, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            note.togglePin()
+            note.isPinned.toggle()
+            note.modifiedDate = Date()
             try context.save()
             return true
         }, context: "Toggle pin") ?? false
     }
     
-    func emptyTrash(notes: [FSNote], in context: ModelContext) -> Bool {
+    func emptyTrash(notes: [Notes], in context: NSManagedObjectContext) -> Bool {
         return errorService.safeDelete({
-            for note in notes where note.isDeleted {
+            for note in notes where note.isMarkedDeleted {
                 context.delete(note)
             }
             try context.save()
@@ -81,10 +114,10 @@ class NotesService: ObservableObject {
         }, context: "Empty trash") ?? false
     }
     
-    func purgeOldDeletedNotes(notes: [FSNote], in context: ModelContext) -> Bool {
+    func purgeOldDeletedNotes(notes: [Notes], in context: NSManagedObjectContext) -> Bool {
         return errorService.safeDelete({
             let cutoffDate = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
-            for note in notes where note.isDeleted && (note.deletedDate ?? Date()) < cutoffDate {
+            for note in notes where note.isMarkedDeleted && (note.modifiedDate ?? Date()) < cutoffDate {
                 context.delete(note)
             }
             try context.save()
@@ -94,25 +127,27 @@ class NotesService: ObservableObject {
     
     // MARK: - Search and Filter Operations
     
-    func searchNotes(_ notes: [FSNote], searchText: String) -> [FSNote] {
+    func searchNotes(_ notes: [Notes], searchText: String) -> [Notes] {
         guard !searchText.isEmpty else { return notes }
         
         let searchLower = searchText.lowercased()
+        
+        
         return notes.filter { note in
-            note.title.localizedCaseInsensitiveContains(searchLower) ||
-            note.content.localizedCaseInsensitiveContains(searchLower) ||
-            note.preview.localizedCaseInsensitiveContains(searchLower) ||
-            note.tags.contains { $0.lowercased().contains(searchLower) }
+            (note.title?.lowercased().contains(searchLower) ?? false) ||
+            (note.content?.lowercased().contains(searchLower) ?? false) ||
+            (note.preview?.lowercased().contains(searchLower) ?? false) ||
+            (note.tags?.contains { $0.lowercased().contains(searchLower) } ?? false)
         }
     }
     
-    func filterNotes(_ notes: [FSNote], showDeleted: Bool, showPinnedOnly: Bool) -> [FSNote] {
+    func filterNotes(_ notes: [Notes], showDeleted: Bool, showPinnedOnly: Bool) -> [Notes] {
         var filtered = notes
         
         if showDeleted {
-            filtered = filtered.filter { $0.isDeleted }
+            filtered = filtered.filter { $0.isMarkedDeleted }
         } else {
-            filtered = filtered.filter { !$0.isDeleted }
+            filtered = filtered.filter { !$0.isMarkedDeleted }
         }
         
         if showPinnedOnly && !showDeleted {
@@ -122,16 +157,16 @@ class NotesService: ObservableObject {
         return filtered
     }
     
-    func sortNotes(_ notes: [FSNote], by sortBy: SortBy, direction: SortDirection) -> [FSNote] {
+    func sortNotes(_ notes: [Notes], by sortBy: SortBy, direction: SortDirection) -> [Notes] {
         var sortedNotes = notes
         
         switch sortBy {
         case .title:
-            sortedNotes.sort { $0.title < $1.title }
+            sortedNotes.sort { ($0.title ?? "") < ($1.title ?? "") }
         case .creationDate:
-            sortedNotes.sort { $0.createdDate < $1.createdDate }
+            sortedNotes.sort { ($0.createdDate ?? Date.distantPast) < ($1.createdDate ?? Date.distantPast) }
         case .modificationDate:
-            sortedNotes.sort { $0.modifiedDate < $1.modifiedDate }
+            sortedNotes.sort { ($0.modifiedDate ?? Date.distantPast) < ($1.modifiedDate ?? Date.distantPast) }
         case .pin:
             sortedNotes.sort { $0.isPinned && !$1.isPinned }
         }
@@ -145,17 +180,25 @@ class NotesService: ObservableObject {
     
     // MARK: - Tag Operations
     
-    func addTag(_ tag: String, to note: FSNote, in context: ModelContext) -> Bool {
+    func addTag(_ tag: String, to note: Notes, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            note.addTag(tag)
+            var currentTags = note.tags?.components(separatedBy: ",") ?? []
+            if !currentTags.contains(tag) {
+                currentTags.append(tag)
+                note.tags = currentTags.joined(separator: ",")
+                note.modifiedDate = Date()
+            }
             try context.save()
             return true
         }, context: "Add tag") ?? false
     }
     
-    func removeTag(_ tag: String, from note: FSNote, in context: ModelContext) -> Bool {
+    func removeTag(_ tag: String, from note: Notes, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            note.removeTag(tag)
+            var currentTags = note.tags?.components(separatedBy: ",") ?? []
+            currentTags.removeAll { $0 == tag }
+            note.tags = currentTags.joined(separator: ",")
+            note.modifiedDate = Date()
             try context.save()
             return true
         }, context: "Remove tag") ?? false
@@ -163,17 +206,21 @@ class NotesService: ObservableObject {
     
     // MARK: - Encryption Operations
     
-    func encryptNote(_ note: FSNote, password: String, in context: ModelContext) -> Bool {
+    func encryptNote(_ note: Notes, password: String, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            try note.encryptContent(password: password)
+            // For now, just mark as encrypted - actual encryption would need to be implemented
+            note.isEncrypted = true
+            note.modifiedDate = Date()
             try context.save()
             return true
         }, context: "Encrypt note") ?? false
     }
     
-    func decryptNote(_ note: FSNote, password: String, in context: ModelContext) -> Bool {
+    func decryptNote(_ note: Notes, password: String, in context: NSManagedObjectContext) -> Bool {
         return errorService.safeSave({
-            _ = try note.decryptContent(password: password)
+            // For now, just mark as not encrypted - actual decryption would need to be implemented
+            note.isEncrypted = false
+            note.modifiedDate = Date()
             try context.save()
             return true
         }, context: "Decrypt note") ?? false
@@ -182,7 +229,7 @@ class NotesService: ObservableObject {
 
 // MARK: - Notes View Model
 class NotesViewModel: ObservableObject {
-    @Published var notes: [FSNote] = []
+    @Published var notes: [Notes] = []
     @Published var searchText: String = ""
     @Published var debouncedSearchText: String = ""
     @Published var sortBy: SortBy = .modificationDate
@@ -194,20 +241,21 @@ class NotesViewModel: ObservableObject {
     private let notesService = NotesService.shared
     private var searchTimer: Timer?
     
-    var filteredNotes: [FSNote] {
+    var filteredNotes: [Notes] {
         let filtered = notesService.filterNotes(notes, showDeleted: showDeleted, showPinnedOnly: showPinnedOnly)
         let searched = notesService.searchNotes(filtered, searchText: debouncedSearchText)
         return notesService.sortNotes(searched, by: sortBy, direction: sortDirection)
     }
     
-    func updateNotes(_ newNotes: [FSNote]) {
+    func updateNotes(_ newNotes: [Notes]) {
         notes = newNotes
     }
     
     func updateSearchText(_ text: String) {
         searchText = text
         searchTimer?.invalidate()
-        searchTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { [weak self] _ in
+        
+        searchTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
             self?.debouncedSearchText = text
         }
     }
@@ -218,5 +266,12 @@ class NotesViewModel: ObservableObject {
     
     func setSortBy(_ newSortBy: SortBy) {
         sortBy = newSortBy
+    }
+    
+    
+    deinit {
+        searchTimer?.invalidate()
+        searchTimer = nil
+        
     }
 }

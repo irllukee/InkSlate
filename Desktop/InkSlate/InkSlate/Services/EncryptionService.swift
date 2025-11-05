@@ -2,9 +2,6 @@
 //  EncryptionService.swift
 //  InkSlate
 //
-//  Created by Lucas Waldron on 10/18/25.
-//  Based on FSNotes encryption implementation
-//  FIXED: Proper AES-256 encryption with secure key derivation
 
 import Foundation
 import SwiftUI
@@ -12,7 +9,7 @@ import CryptoKit
 import LocalAuthentication
 import Security
 
-// MARK: - Encryption Service (FSNotes-inspired, FIXED)
+// MARK: - Encryption Service
 class EncryptionService: ObservableObject {
     static let shared = EncryptionService()
     
@@ -21,42 +18,49 @@ class EncryptionService: ObservableObject {
     
     private init() {}
     
+    
+    deinit {
+        
+    }
+    
     // MARK: - Encryption Methods
     
-    func encryptNote(_ note: FSNote, password: String) -> Bool {
+    func encryptNote(_ note: Notes, password: String) -> Bool {
         guard !password.isEmpty else { return false }
         
         do {
             let key = try deriveKey(from: password, note: note)
-            let encryptedData = try encrypt(data: note.content.data(using: .utf8) ?? Data(), with: key)
+            let content = note.content ?? ""
+            let encryptedData = try encrypt(data: content.data(using: .utf8) ?? Data(), with: key)
             
             // Store encrypted content
             note.content = encryptedData.base64EncodedString()
             note.isEncrypted = true
-            note.containerType = .encryptedTextPack
+            note.containerType = "encrypted"
             
             return true
         } catch {
-            print("Encryption failed: \(error)")
+            // Encryption failed
             return false
         }
     }
     
-    func decryptNote(_ note: FSNote, password: String) -> Bool {
+    func decryptNote(_ note: Notes, password: String) -> Bool {
         guard note.isEncrypted, !password.isEmpty else { return false }
         
         do {
             let key = try deriveKey(from: password, note: note)
-            guard let encryptedData = Data(base64Encoded: note.content) else { return false }
+            let content = note.content ?? ""
+            guard let encryptedData = Data(base64Encoded: content) else { return false }
             
             let decryptedData = try decrypt(data: encryptedData, with: key)
             note.content = String(data: decryptedData, encoding: .utf8) ?? ""
             note.isEncrypted = false
-            note.containerType = .none
+            note.containerType = "none"
             
             return true
         } catch {
-            print("Decryption failed: \(error)")
+            // Decryption failed
             return false
         }
     }
@@ -134,16 +138,16 @@ class EncryptionService: ObservableObject {
             &error
         )
         
-        if let error = error {
-            print("Access control creation error: \(error.takeRetainedValue())")
+        if error != nil {
+            // Access control creation error
         }
         
         return access!
     }
     
-    // MARK: - Private Methods (FIXED)
+    // MARK: - Private Methods
     
-    private func deriveKey(from password: String, note: FSNote) throws -> SymmetricKey {
+    private func deriveKey(from password: String, note: Notes) throws -> SymmetricKey {
         let passwordData = password.data(using: .utf8) ?? Data()
         
         // Generate unique salt for each note using note ID
@@ -197,7 +201,7 @@ class EncryptionService: ObservableObject {
         return try AES.GCM.open(sealedBox, using: key)
     }
     
-    // MARK: - Public Encryption Methods for FSNote
+    // MARK: - Public Encryption Methods for Notes
     
     func encrypt(data: Data, password: String) throws -> Data {
         // For standalone encryption without note context
@@ -235,7 +239,7 @@ struct EncryptionView: View {
     @State private var useBiometrics: Bool = false
     @State private var showingAlert = false
     @State private var alertMessage = ""
-    let note: FSNote
+    let note: Notes
     let onComplete: (Bool) -> Void
     
     var body: some View {
@@ -326,7 +330,7 @@ struct DecryptionView: View {
     @State private var showingAlert = false
     @State private var alertMessage = ""
     @State private var canUseBiometrics = false
-    let note: FSNote
+    let note: Notes
     let onComplete: (Bool) -> Void
     
     var body: some View {

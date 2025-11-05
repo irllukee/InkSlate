@@ -22,6 +22,11 @@ class ThemeService: ObservableObject {
         updateAppearance()
     }
     
+    
+    deinit {
+        
+    }
+    
     func updateAppearance() {
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
             isDarkMode = windowScene.traitCollection.userInterfaceStyle == .dark

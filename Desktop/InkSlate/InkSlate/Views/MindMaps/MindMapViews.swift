@@ -6,12 +6,15 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 // MARK: - Mind Map Views
 struct MindMapListView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var mindMaps: [MindMap]
+    @Environment(\.managedObjectContext) private var viewContext
+    
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \MindMap.modifiedDate, ascending: false)]
+    ) private var mindMaps: FetchedResults<MindMap>
     @State private var showingAlert = false
     @State private var editingMindMap: MindMap?
     @State private var newMindMapName = ""
@@ -21,9 +24,9 @@ struct MindMapListView: View {
             ForEach(mindMaps) { mindMap in
                 NavigationLink(destination: MindMapDetailView(mindMap: mindMap)) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(mindMap.name)
+                        Text(mindMap.title ?? "Untitled")
                             .font(.headline)
-                        Text("\(mindMap.rootNode?.children?.count ?? 0) topics")
+                        Text("\(mindMap.rootNodes?.count ?? 0) topics")
                             .font(.caption)
                             .foregroundColor(.gray)
                     }
@@ -31,13 +34,13 @@ struct MindMapListView: View {
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button("Delete") {
-                        modelContext.delete(mindMap)
+                        viewContext.delete(mindMap)
                     }
                     .tint(.red)
                     
                     Button("Rename") {
                         editingMindMap = mindMap
-                        newMindMapName = mindMap.name
+                        newMindMapName = mindMap.title ?? "Untitled"
                         showingAlert = true
                     }
                     .tint(.blue)
@@ -59,24 +62,25 @@ struct MindMapListView: View {
             Button("Cancel") { }
             Button("Save") {
                 if let mindMap = editingMindMap {
-                    mindMap.name = newMindMapName
-                    try? modelContext.save()
+                    mindMap.title = newMindMapName
+                    try? viewContext.save()
                 }
             }
         }
     }
     
     private func createNewMindMap() {
-        let newMindMap = MindMap(name: "Untitled Mind Map")
-        modelContext.insert(newMindMap)
-        try? modelContext.save()
+        let newMindMap = MindMap(context: viewContext)
+        newMindMap.title = "Untitled Mind Map"
+        viewContext.insert(newMindMap)
+        try? viewContext.save()
     }
 }
 
 struct MindMapDetailView: View {
     let mindMap: MindMap
-    @Environment(\.modelContext) private var modelContext
-    @State private var currentNode: MindMapNode
+    @Environment(\.managedObjectContext) private var viewContext
+    @State private var currentNode: MindMapNode?
     @State private var navigationStack: [MindMapNode] = []
     @State private var selectedNodeForAction: MindMapNode?
     @State private var showingEditSheet = false
@@ -88,7 +92,8 @@ struct MindMapDetailView: View {
     
     init(mindMap: MindMap) {
         self.mindMap = mindMap
-        self._currentNode = State(initialValue: mindMap.rootNode ?? MindMapNode(title: "Main Node"))
+        // We'll initialize currentNode in onAppear since we need viewContext
+        self._currentNode = State(initialValue: nil)
     }
     
     var body: some View {
@@ -159,14 +164,27 @@ struct MindMapDetailView: View {
                 Text("This node has \(node.children?.count ?? 0) child node(s). Are you sure you want to delete it and all its children?")
             }
         }
+        .onAppear {
+            // Initialize currentNode with the first root node or create a new one
+            if let firstRootNode = (mindMap.rootNodes?.allObjects as? [MindMapNode])?.first {
+                currentNode = firstRootNode
+            } else {
+                // Create a new root node if none exists
+                let newRootNode = MindMapNode(context: viewContext)
+                newRootNode.title = "Main Node"
+                newRootNode.mindMap = mindMap
+                currentNode = newRootNode
+                try? viewContext.save()
+            }
+        }
     }
     
     private func getNodePosition(for node: MindMapNode, in geometry: GeometryProxy) -> CGPoint {
-        if node.id == currentNode.id {
+        if let current = currentNode, node.id == current.id {
             return CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
         }
         
-        let children = currentNode.children ?? []
+        let children = currentNode?.children?.allObjects as? [MindMapNode] ?? []
         
         // Group nodes by ring
         let ring0Nodes = children.filter { $0.ring == 0 }
@@ -198,7 +216,7 @@ struct MindMapDetailView: View {
         let orbitalRings: [CGFloat] = [120, 210]
         
         // Use the stored ring value
-        let radius = orbitalRings[min(node.ring, orbitalRings.count - 1)]
+        let radius = orbitalRings[min(Int(node.ring), orbitalRings.count - 1)]
         
         // Calculate angle for this node based on its position in its ring
         let startAngle = -Double.pi / 2  // Start at top
@@ -211,9 +229,21 @@ struct MindMapDetailView: View {
         return CGPoint(x: x, y: y)
     }
     
+    private func getNodeDepth(_ node: MindMapNode) -> Int {
+        var depth = 0
+        var current = node.parent
+        while current != nil {
+            depth += 1
+            current = current?.parent
+        }
+        return depth
+    }
+    
     private func navigateToNode(_ node: MindMapNode) {
-        guard node.getDepth() < 10 else { return }
-        navigationStack.append(currentNode)
+        guard getNodeDepth(node) < 10 else { return }
+        if let current = currentNode {
+            navigationStack.append(current)
+        }
         currentNode = node
         selectedNodeForAction = nil
     }
@@ -227,7 +257,7 @@ struct MindMapDetailView: View {
     private func navigateToNodeAtIndex(_ index: Int) {
         if index == -1 {
             navigationStack.removeAll()
-            currentNode = mindMap.rootNode ?? MindMapNode(title: "Main Node")
+            currentNode = (mindMap.rootNodes?.allObjects as? [MindMapNode])?.first
             selectedNodeForAction = nil
         } else if index < navigationStack.count {
             let targetNode = navigationStack[index]
@@ -239,14 +269,16 @@ struct MindMapDetailView: View {
     
     private var breadcrumbView: some View {
         Group {
-            if showingBreadcrumbs && (!navigationStack.isEmpty || currentNode.id != mindMap.rootNode?.id) {
-                BreadcrumbNavigationView(
-                    mindMap: mindMap,
-                    navigationStack: navigationStack,
-                    currentNode: currentNode,
-                    onNavigateToNode: navigateToNodeAtIndex
-                )
-                .transition(.move(edge: .top).combined(with: .opacity))
+            if showingBreadcrumbs && (!navigationStack.isEmpty || currentNode?.id != (mindMap.rootNodes?.allObjects as? [MindMapNode])?.first?.id) {
+                if let current = currentNode {
+                    BreadcrumbNavigationView(
+                        mindMap: mindMap,
+                        navigationStack: navigationStack,
+                        currentNode: current,
+                        onNavigateToNode: navigateToNodeAtIndex
+                    )
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
             }
         }
     }
@@ -261,11 +293,11 @@ struct MindMapDetailView: View {
                     orbitalRingsView(geometry: geometry)
                     centerNodeView(geometry: geometry)
                     childNodesView(geometry: geometry)
-                        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentNode.children?.count ?? 0)
+                        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentNode?.children?.count ?? 0)
                     actionBubblesView(geometry: geometry)
                 }
                 .scaleEffect(calculateZoomScale())
-                .animation(.easeInOut(duration: 0.3), value: currentNode.children?.count ?? 0)
+                .animation(.easeInOut(duration: 0.3), value: currentNode?.children?.count ?? 0)
                 
                 // Add button stays fixed (not affected by zoom)
                 addButtonView
@@ -274,7 +306,7 @@ struct MindMapDetailView: View {
     }
     
     private func calculateZoomScale() -> CGFloat {
-        let children = currentNode.children ?? []
+        let children = currentNode?.children?.allObjects as? [MindMapNode] ?? []
         let hasRing1Nodes = children.contains { $0.ring == 1 }
         
         if hasRing1Nodes {
@@ -300,7 +332,7 @@ struct MindMapDetailView: View {
         let orbitalRings: [CGFloat] = [120, 210]
         
         // Only show rings that have nodes
-        let children = currentNode.children ?? []
+        let children = currentNode?.children?.allObjects as? [MindMapNode] ?? []
         var visibleRings: [Int] = []
         
         if children.contains(where: { $0.ring == 0 }) {
@@ -323,21 +355,24 @@ struct MindMapDetailView: View {
         }
     }
     
+    @ViewBuilder
     private func centerNodeView(geometry: GeometryProxy) -> some View {
-        NodeBubbleView(
-            node: currentNode,
-            isCenter: true,
-            onTap: {},
-            onLongPress: {
-                selectedNodeForAction = currentNode
-            }
-        )
-        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+        if let current = currentNode {
+            NodeBubbleView(
+                node: current,
+                isCenter: true,
+                onTap: {},
+                onLongPress: {
+                    selectedNodeForAction = current
+                }
+            )
+            .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+        }
     }
     
     @ViewBuilder
     private func childNodesView(geometry: GeometryProxy) -> some View {
-        let children = currentNode.children ?? []
+        let children = currentNode?.children?.allObjects as? [MindMapNode] ?? []
         let ring0Nodes = children.filter { $0.ring == 0 }
         let ring1Nodes = children.filter { $0.ring == 1 }
         
@@ -389,9 +424,9 @@ struct MindMapDetailView: View {
                         }
                     }
                     
-                    if selectedNode.id != currentNode.id {
+                    if selectedNode.id != currentNode?.id {
                         ActionBubbleView(title: "Delete", color: .red) {
-                            if (selectedNode.children?.isEmpty ?? true) {
+                            if (selectedNode.children?.count ?? 0) == 0 {
                                 deleteNode(selectedNode)
                                 selectedNodeForAction = nil
                             } else {
@@ -427,16 +462,18 @@ struct MindMapDetailView: View {
     }
     
     private func addNewNode() {
-        guard (currentNode.children?.count ?? 0) < 20 else { return }
+        guard let current = currentNode, (current.children?.count ?? 0) < 20 else { return }
         
         // Determine which ring to place the new node on
-        let children = currentNode.children ?? []
+        let children = current.children?.allObjects as? [MindMapNode] ?? []
         let ring0Count = children.filter { $0.ring == 0 }.count
         let assignedRing = ring0Count < 9 ? 0 : 1
         
-        let newNode = MindMapNode(title: "New Topic", parent: currentNode, ring: assignedRing)
-        currentNode.addChild(newNode)
-        try? modelContext.save()
+        let newNode = MindMapNode(context: viewContext)
+        newNode.title = "New Topic"
+        newNode.parent = current
+        newNode.ring = Int16(assignedRing)
+        try? viewContext.save()
         
         // Immediately open edit sheet for the new node
         selectedNodeForAction = newNode
@@ -444,8 +481,8 @@ struct MindMapDetailView: View {
     }
     
     private func deleteNode(_ node: MindMapNode) {
-        currentNode.removeChild(node)
-        try? modelContext.save()
+        viewContext.delete(node)
+        try? viewContext.save()
     }
 }
 
@@ -471,7 +508,7 @@ struct NodeBubbleView: View {
     
     // Smart algorithm to calculate optimal font size based on text and bubble constraints
     private func calculateOptimalFontSize() -> CGFloat {
-        let title = node.title
+        let title = node.title ?? ""
         let maxFontSize: CGFloat = isCenter ? 18 : 16
         let minFontSize: CGFloat = 7
         
@@ -558,7 +595,7 @@ struct NodeBubbleView: View {
     }
     
     var body: some View {
-        let textContent = Text(node.title)
+        let textContent = Text(node.title ?? "Untitled")
             .font(.system(size: fontSize, weight: isCenter ? .semibold : .medium))
             .foregroundColor(.white)
             .multilineTextAlignment(.center)
@@ -628,14 +665,14 @@ struct EditNodeView: View {
     @State private var title: String
     @State private var notes: String
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     let onDismiss: () -> Void
     
     init(node: MindMapNode, onDismiss: @escaping () -> Void) {
         self.node = node
         self.onDismiss = onDismiss
-        self._title = State(initialValue: node.title)
-        self._notes = State(initialValue: node.notes)
+        self._title = State(initialValue: node.title ?? "")
+        self._notes = State(initialValue: node.notes ?? "")
     }
     
     var body: some View {
@@ -688,7 +725,7 @@ struct EditNodeView: View {
                     Button("Save") {
                         node.title = title.isEmpty ? "Untitled" : title
                         node.notes = notes
-                        try? modelContext.save()
+                        try? viewContext.save()
                         onDismiss()
                         dismiss()
                     }
@@ -710,7 +747,7 @@ struct ViewNodeView: View {
                         .font(.headline)
                         .foregroundColor(.secondary)
                     
-                    Text(node.title.isEmpty ? "Untitled" : node.title)
+                    Text((node.title?.isEmpty ?? true) ? "Untitled" : (node.title ?? "Untitled"))
                         .font(.title2)
                         .fontWeight(.semibold)
                         .padding()
@@ -725,7 +762,7 @@ struct ViewNodeView: View {
                         .foregroundColor(.secondary)
                     
                     ScrollView {
-                        Text(node.notes.isEmpty ? "No notes added yet" : node.notes)
+                        Text((node.notes?.isEmpty ?? true) ? "No notes added yet" : (node.notes ?? ""))
                             .font(.body)
                             .padding()
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -762,8 +799,8 @@ struct BreadcrumbNavigationView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 BreadcrumbItemView(
-                    title: mindMap.name,
-                    isActive: currentNode.id == mindMap.rootNode?.id,
+                    title: mindMap.title ?? "Untitled",
+                    isActive: currentNode.id == (mindMap.rootNodes?.allObjects.first as? MindMapNode)?.id,
                     isLast: false
                 ) {
                     onNavigateToNode(-1)
@@ -777,7 +814,7 @@ struct BreadcrumbNavigationView: View {
                             .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
                         
                         BreadcrumbItemView(
-                            title: node.title,
+                            title: node.title ?? "Untitled",
                             isActive: false,
                             isLast: false
                         ) {
@@ -786,7 +823,7 @@ struct BreadcrumbNavigationView: View {
                     }
                 }
                 
-                if currentNode.id != mindMap.rootNode?.id {
+                if let firstRootNode = (mindMap.rootNodes?.allObjects.first as? MindMapNode), currentNode.id != firstRootNode.id {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.right")
                             .font(.caption)
@@ -794,7 +831,7 @@ struct BreadcrumbNavigationView: View {
                             .shadow(color: DesignSystem.Shadows.small, radius: 1, x: 0, y: 1)
                         
                         BreadcrumbItemView(
-                            title: currentNode.title,
+                            title: currentNode.title ?? "Untitled",
                             isActive: true,
                             isLast: true
                         ) {

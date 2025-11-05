@@ -6,18 +6,77 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
+
+// MARK: - Quote Category Enum
+enum QuoteCategory: String, CaseIterable {
+    case motivation = "motivation"
+    case inspiration = "inspiration"
+    case wisdom = "wisdom"
+    case success = "success"
+    case happiness = "happiness"
+    case love = "love"
+    case life = "life"
+    case work = "work"
+    case creativity = "creativity"
+    case mindfulness = "mindfulness"
+    
+    var displayName: String {
+        switch self {
+        case .motivation: return "Motivation"
+        case .inspiration: return "Inspiration"
+        case .wisdom: return "Wisdom"
+        case .success: return "Success"
+        case .happiness: return "Happiness"
+        case .love: return "Love"
+        case .life: return "Life"
+        case .work: return "Work"
+        case .creativity: return "Creativity"
+        case .mindfulness: return "Mindfulness"
+        }
+    }
+    
+    var icon: String {
+        switch self {
+        case .motivation: return "flame.fill"
+        case .inspiration: return "lightbulb.fill"
+        case .wisdom: return "brain.head.profile"
+        case .success: return "trophy.fill"
+        case .happiness: return "face.smiling.fill"
+        case .love: return "heart.fill"
+        case .life: return "leaf.fill"
+        case .work: return "briefcase.fill"
+        case .creativity: return "paintbrush.fill"
+        case .mindfulness: return "leaf.arrow.circlepath"
+        }
+    }
+    
+    var color: Color {
+        switch self {
+        case .motivation: return .orange
+        case .inspiration: return .yellow
+        case .wisdom: return .purple
+        case .success: return .green
+        case .happiness: return .pink
+        case .love: return .red
+        case .life: return .mint
+        case .work: return .blue
+        case .creativity: return .indigo
+        case .mindfulness: return .teal
+        }
+    }
+}
 
 // MARK: - Ultra-Modern Quotes Views
 
 // MARK: - Modern Quotes Main View
 struct ModernQuotesMainView: View {
-    @Environment(\.modelContext) private var modelContext
-    @StateObject private var loadingManager = LoadingStateManager()
-    @StateObject private var autoSaveManager = AutoSaveManager()
+    @Environment(\.managedObjectContext) private var viewContext
     
-    // ✅ OPTIMIZED: Added sort to query to avoid redundant sorting
-    @Query(sort: \Quote.createdDate, order: .reverse) private var allQuotes: [Quote]
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Quote.createdDate, ascending: false)]
+    ) private var allQuotes: FetchedResults<Quote>
+    
     @State private var selectedCategory: QuoteCategory? = .motivation
     @State private var searchText = ""
     @State private var showingAddQuote = false
@@ -30,16 +89,16 @@ struct ModernQuotesMainView: View {
             categoryQuotes = allQuotes.filter { $0.category == category.rawValue }
         } else {
             // Show all quotes when no specific category is selected
-            categoryQuotes = allQuotes
+            categoryQuotes = Array(allQuotes)
         }
         
-        // ✅ OPTIMIZED: Removed redundant sorting - will add sort to @Query instead
+        
         if searchText.isEmpty {
             return categoryQuotes
         } else {
             return categoryQuotes.filter { quote in
-                quote.text.localizedCaseInsensitiveContains(searchText) ||
-                quote.author.localizedCaseInsensitiveContains(searchText)
+                (quote.text?.localizedCaseInsensitiveContains(searchText) ?? false) ||
+                (quote.author?.localizedCaseInsensitiveContains(searchText) ?? false)
             }
         }
     }
@@ -126,7 +185,7 @@ struct ModernQuotesMainView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: DesignSystem.Spacing.md) {
-                        ForEach(filteredQuotes, id: \.id) { quote in
+                        ForEach(filteredQuotes, id: \.objectID) { quote in
                             ModernQuoteCard(quote: quote)
                         }
                     }
@@ -139,7 +198,6 @@ struct ModernQuotesMainView: View {
         .sheet(isPresented: $showingAddQuote) {
             ModernAddQuoteView()
         }
-        .loadingOverlay(loadingManager: loadingManager)
     }
 }
 
@@ -199,8 +257,7 @@ struct ModernQuoteCategoryTab: View {
 
 // MARK: - Modern Quote Card
 struct ModernQuoteCard: View {
-    @Environment(\.modelContext) private var modelContext
-    @StateObject private var autoSaveManager = AutoSaveManager()
+    @Environment(\.managedObjectContext) private var viewContext
     
     let quote: Quote
     @State private var isHovered = false
@@ -211,7 +268,7 @@ struct ModernQuoteCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
             // Quote text
-            Text("\"\(quote.text)\"")
+            Text("\"\(quote.text ?? "")\"")
                 .font(DesignSystem.Typography.title3)
                 .fontWeight(.medium)
                 .foregroundColor(DesignSystem.Colors.textPrimary)
@@ -220,7 +277,7 @@ struct ModernQuoteCard: View {
             
             // Author and actions
             HStack {
-                Text("— \(quote.author)")
+                Text("— \(quote.author ?? "")")
                     .font(DesignSystem.Typography.callout)
                     .fontWeight(.medium)
                     .foregroundColor(DesignSystem.Colors.textSecondary)
@@ -258,7 +315,7 @@ struct ModernQuoteCard: View {
             
             // Category badge
             HStack {
-                if let category = QuoteCategory(rawValue: quote.category) {
+                if let category = QuoteCategory(rawValue: quote.category ?? "") {
                     HStack(spacing: DesignSystem.Spacing.xs) {
                         Image(systemName: category.icon)
                             .font(.system(size: 12, weight: .semibold))
@@ -327,13 +384,21 @@ struct ModernQuoteCard: View {
         withAnimation(.easeInOut(duration: 0.2)) {
             quote.isFavorite.toggle()
         }
-        modelContext.saveWithDebounce(using: autoSaveManager)
+        do {
+            try viewContext.save()
+        } catch {
+            // Handle error
+        }
     }
     
     private func deleteQuote() {
         withAnimation(.easeInOut(duration: 0.2)) {
-            modelContext.delete(quote)
-            modelContext.saveWithDebounce(using: autoSaveManager)
+            viewContext.delete(quote)
+            do {
+                try viewContext.save()
+            } catch {
+                // Handle error
+            }
         }
     }
 }
@@ -386,9 +451,7 @@ struct ModernEmptyQuotesView: View {
 // MARK: - Modern Add Quote View
 struct ModernAddQuoteView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
-    @StateObject private var loadingManager = LoadingStateManager()
-    @StateObject private var autoSaveManager = AutoSaveManager()
+    @Environment(\.managedObjectContext) private var viewContext
     
     @State private var quoteText = ""
     @State private var author = ""
@@ -487,23 +550,24 @@ struct ModernAddQuoteView: View {
                 }
             }
         }
-        .loadingOverlay(loadingManager: loadingManager)
     }
     
     private func saveQuote() {
-        loadingManager.startLoading(message: "Saving quote...")
+        let newQuote = Quote(context: viewContext)
+        newQuote.id = UUID()
+        newQuote.text = quoteText.trimmingCharacters(in: .whitespacesAndNewlines)
+        newQuote.author = author.trimmingCharacters(in: .whitespacesAndNewlines)
+        newQuote.category = selectedCategory.rawValue
+        newQuote.createdDate = Date()
+        newQuote.modifiedDate = Date()
+        newQuote.isFavorite = false
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            let newQuote = Quote(
-                text: quoteText.trimmingCharacters(in: .whitespacesAndNewlines),
-                author: author.trimmingCharacters(in: .whitespacesAndNewlines),
-                category: selectedCategory.rawValue
-            )
-            
-            modelContext.insert(newQuote)
-            modelContext.saveWithDebounce(using: autoSaveManager)
-            loadingManager.stopLoading()
+        viewContext.insert(newQuote)
+        do {
+            try viewContext.save()
             dismiss()
+        } catch {
+            // Handle error
         }
     }
 }
@@ -511,9 +575,7 @@ struct ModernAddQuoteView: View {
 // MARK: - Modern Edit Quote View
 struct ModernEditQuoteView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
-    @StateObject private var loadingManager = LoadingStateManager()
-    @StateObject private var autoSaveManager = AutoSaveManager()
+    @Environment(\.managedObjectContext) private var viewContext
     
     let quote: Quote
     @State private var quoteText: String
@@ -522,9 +584,9 @@ struct ModernEditQuoteView: View {
     
     init(quote: Quote) {
         self.quote = quote
-        self._quoteText = State(initialValue: quote.text)
-        self._author = State(initialValue: quote.author)
-        self._selectedCategory = State(initialValue: QuoteCategory(rawValue: quote.category) ?? .motivation)
+        self._quoteText = State(initialValue: quote.text ?? "")
+        self._author = State(initialValue: quote.author ?? "")
+        self._selectedCategory = State(initialValue: QuoteCategory(rawValue: quote.category ?? "") ?? .motivation)
     }
     
     var body: some View {
@@ -620,20 +682,19 @@ struct ModernEditQuoteView: View {
                 }
             }
         }
-        .loadingOverlay(loadingManager: loadingManager)
     }
     
     private func saveChanges() {
-        loadingManager.startLoading(message: "Saving changes...")
+        quote.text = quoteText.trimmingCharacters(in: .whitespacesAndNewlines)
+        quote.author = author.trimmingCharacters(in: .whitespacesAndNewlines)
+        quote.category = selectedCategory.rawValue
+        quote.modifiedDate = Date()
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            quote.text = quoteText.trimmingCharacters(in: .whitespacesAndNewlines)
-            quote.author = author.trimmingCharacters(in: .whitespacesAndNewlines)
-            quote.category = selectedCategory.rawValue
-            
-            modelContext.saveWithDebounce(using: autoSaveManager)
-            loadingManager.stopLoading()
+        do {
+            try viewContext.save()
             dismiss()
+        } catch {
+            // Handle error
         }
     }
 }
@@ -641,8 +702,7 @@ struct ModernEditQuoteView: View {
 // MARK: - Enhanced Modern Quote Detail View
 struct EnhancedModernQuoteDetailView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
-    @StateObject private var autoSaveManager = AutoSaveManager()
+    @Environment(\.managedObjectContext) private var viewContext
     
     let quote: Quote
     @State private var showingEditSheet = false
@@ -653,7 +713,7 @@ struct EnhancedModernQuoteDetailView: View {
             ScrollView {
                 VStack(spacing: DesignSystem.Spacing.xl) {
                     // Category badge
-                    if let category = QuoteCategory(rawValue: quote.category) {
+                    if let category = QuoteCategory(rawValue: quote.category ?? "") {
                         HStack {
                             ZStack {
                                 Circle()
@@ -697,7 +757,7 @@ struct EnhancedModernQuoteDetailView: View {
                             .fontWeight(.semibold)
                             .foregroundColor(DesignSystem.Colors.textSecondary)
                         
-                        Text("\"\(quote.text)\"")
+                        Text("\"\(quote.text ?? "")\"")
                             .font(DesignSystem.Typography.title2)
                             .fontWeight(.medium)
                             .foregroundColor(DesignSystem.Colors.textPrimary)
@@ -719,7 +779,7 @@ struct EnhancedModernQuoteDetailView: View {
                                 .font(.system(size: 24))
                                 .foregroundColor(DesignSystem.Colors.accent)
                             
-                            Text(quote.author)
+                            Text(quote.author ?? "")
                                 .font(DesignSystem.Typography.body)
                                 .fontWeight(.medium)
                                 .foregroundColor(DesignSystem.Colors.textPrimary)
@@ -748,7 +808,7 @@ struct EnhancedModernQuoteDetailView: View {
                                 
                                 Spacer()
                                 
-                                Text(quote.createdDate, style: .date)
+                                Text(quote.createdDate ?? Date(), style: .date)
                                     .font(DesignSystem.Typography.body)
                                     .foregroundColor(DesignSystem.Colors.textPrimary)
                             }
@@ -767,7 +827,7 @@ struct EnhancedModernQuoteDetailView: View {
                                 
                                 Spacer()
                                 
-                                Text(quote.createdDate, style: .time)
+                                Text(quote.createdDate ?? Date(), style: .time)
                                     .font(DesignSystem.Typography.body)
                                     .foregroundColor(DesignSystem.Colors.textPrimary)
                             }
@@ -852,12 +912,20 @@ struct EnhancedModernQuoteDetailView: View {
         withAnimation(.easeInOut(duration: 0.2)) {
             quote.isFavorite.toggle()
         }
-        modelContext.saveWithDebounce(using: autoSaveManager)
+        do {
+            try viewContext.save()
+        } catch {
+            // Handle error
+        }
     }
     
     private func deleteQuote() {
-        modelContext.delete(quote)
-        modelContext.saveWithDebounce(using: autoSaveManager)
-        dismiss()
+        viewContext.delete(quote)
+        do {
+            try viewContext.save()
+            dismiss()
+        } catch {
+            // Handle error
+        }
     }
 }
