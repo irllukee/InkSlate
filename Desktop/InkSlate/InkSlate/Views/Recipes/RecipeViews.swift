@@ -9,7 +9,6 @@
 import SwiftUI
 import CoreData
 import PhotosUI
-import UIKit
 
 // MARK: - Recipe Extensions
 extension Recipe {
@@ -24,6 +23,85 @@ extension Recipe {
     // Helper to get ingredients as array
     var ingredientsArray: [RecipeIngredient] {
         (ingredients?.allObjects as? [RecipeIngredient]) ?? []
+    }
+    
+    fileprivate var recipeDetails: StoredRecipeDetails {
+        if let instructions = instructions,
+           let data = instructions.data(using: .utf8),
+           let details = try? recipeDetailsDecoder.decode(StoredRecipeDetails.self, from: data) {
+            return details
+        }
+        
+        if let instructions = instructions, !instructions.isEmpty {
+            return StoredRecipeDetails(
+                steps: [StoredRecipeStep(id: UUID(), instruction: instructions, timerMinutes: nil)],
+                notes: nil
+            )
+        }
+        
+        return StoredRecipeDetails(steps: [], notes: nil)
+    }
+    
+    var recipeSteps: [RecipeStep] {
+        recipeDetails.steps.map {
+            RecipeStep(id: $0.id, instruction: $0.instruction, timerMinutes: $0.timerMinutes)
+        }
+    }
+    
+    var recipeNotes: String {
+        recipeDetails.notes ?? ""
+    }
+    
+    var dietaryTagsSet: Set<DietaryTag> {
+        guard
+            let source = source,
+            let data = source.data(using: .utf8),
+            let rawValues = try? dietaryTagsDecoder.decode([String].self, from: data)
+        else { return [] }
+        
+        return Set(rawValues.compactMap { DietaryTag(rawValue: $0) })
+    }
+    
+    func updateDetails(steps: [RecipeStep], notes: String) {
+        let storedSteps = steps.map { step in
+            StoredRecipeStep(id: step.id, instruction: step.instruction, timerMinutes: step.timerMinutes)
+        }
+        
+        let storedDetails = StoredRecipeDetails(
+            steps: storedSteps,
+            notes: notes.isEmpty ? nil : notes
+        )
+        
+        if let data = try? recipeDetailsEncoder.encode(storedDetails),
+           let json = String(data: data, encoding: .utf8) {
+            instructions = json
+        } else {
+            instructions = notes
+        }
+    }
+    
+    func updateDietaryTags(_ tags: Set<DietaryTag>) {
+        let rawValues = tags.map { $0.rawValue }
+        if let data = try? dietaryTagsEncoder.encode(rawValues),
+           let json = String(data: data, encoding: .utf8) {
+            source = json
+        } else {
+            source = nil
+        }
+    }
+}
+
+extension RecipeIngredient {
+    var rawAmountString: String {
+        (notes?.isEmpty == false) ? notes! : formattedAmount
+    }
+    
+    var formattedAmount: String {
+        if amount == 0 { return "" }
+        if amount.truncatingRemainder(dividingBy: 1) == 0 {
+            return String(Int(amount))
+        }
+        return String(format: "%.2f", amount)
     }
 }
 
@@ -130,48 +208,6 @@ struct RecipeStep: Codable, Identifiable {
 }
 
 
-// MARK: - Shopping List Item Model
-struct ShoppingListItem: Codable, Identifiable {
-    let id: UUID
-    var name: String
-    var amount: String
-    var unit: String
-    var isChecked: Bool
-    var category: String
-    var fromRecipe: String?
-    
-    init(id: UUID = UUID(), name: String, amount: String = "", unit: String = "", isChecked: Bool = false, category: String = "Other", fromRecipe: String? = nil) {
-        self.id = id
-        self.name = name
-        self.amount = amount
-        self.unit = unit
-        self.isChecked = isChecked
-        self.category = category
-        self.fromRecipe = fromRecipe
-    }
-}
-
-// MARK: - Pantry Item Model
-struct PantryItem: Codable, Identifiable {
-    let id: UUID
-    var name: String
-    var quantity: String
-    var unit: String
-    var category: PantryCategory
-    var expirationDate: Date?
-    var notes: String
-    
-    init(id: UUID = UUID(), name: String, quantity: String = "", unit: String = "", category: PantryCategory, expirationDate: Date? = nil, notes: String = "") {
-        self.id = id
-        self.name = name
-        self.quantity = quantity
-        self.unit = unit
-        self.category = category
-        self.expirationDate = expirationDate
-        self.notes = notes
-    }
-}
-
 enum PantryCategory: String, CaseIterable, Codable {
     case fridge = "Fridge"
     case spices = "Spice Cabinet"
@@ -186,6 +222,189 @@ enum PantryCategory: String, CaseIterable, Codable {
         case .freezer: return "snowflake"
         }
     }
+
+    var navigationTitle: String {
+        switch self {
+        case .fridge: return "What's in My Fridge"
+        case .spices: return "Spice Cabinet"
+        case .pantry: return "Pantry Staples"
+        case .freezer: return "Freezer"
+        }
+    }
+
+    var emptyStateTitle: String {
+        switch self {
+        case .fridge: return "Nothing in the fridge yet"
+        case .spices: return "No spices recorded"
+        case .pantry: return "Pantry is empty"
+        case .freezer: return "Freezer inventory is empty"
+        }
+    }
+}
+
+enum ShoppingCategory: String, CaseIterable {
+    case general = "General"
+    case produce = "Produce"
+    case meat = "Meat & Seafood"
+    case dairy = "Dairy"
+    case bakery = "Bakery"
+    case pantry = "Pantry Staples"
+    case beverages = "Beverages"
+    case frozen = "Frozen"
+    case snacks = "Snacks"
+    case household = "Household"
+    case other = "Other"
+    
+    var icon: String {
+        switch self {
+        case .general: return "square.grid.2x2"
+        case .produce: return "leaf.fill"
+        case .meat: return "fork.knife"
+        case .dairy: return "drop.fill"
+        case .bakery: return "birthday.cake.fill"
+        case .pantry: return "shippingbox"
+        case .beverages: return "cup.and.saucer.fill"
+        case .frozen: return "snowflake"
+        case .snacks: return "popcorn.fill"
+        case .household: return "sparkles"
+        case .other: return "ellipsis"
+        }
+    }
+}
+
+// MARK: - Core Data Helpers
+extension ShoppingItemEntity {
+    var itemID: UUID { id ?? UUID() }
+    var wrappedName: String { name ?? "" }
+    var wrappedAmount: String { amount ?? "" }
+    var wrappedUnit: String { unit ?? "" }
+    var wrappedCategory: String { category ?? "Other" }
+    var recipeSource: String? {
+        guard let fromRecipe, !fromRecipe.isEmpty else { return nil }
+        return fromRecipe
+    }
+    var createdAt: Date { createdDate ?? Date() }
+}
+
+extension PantryItemEntity {
+    var itemID: UUID { id ?? UUID() }
+    var wrappedName: String { name ?? "" }
+    var wrappedQuantity: String { quantity ?? "" }
+    var wrappedUnit: String { unit ?? "" }
+    var wrappedNotes: String { notes ?? "" }
+    var wrappedCategory: PantryCategory {
+        PantryCategory(rawValue: category ?? PantryCategory.pantry.rawValue) ?? .pantry
+    }
+    var createdAt: Date { createdDate ?? Date() }
+}
+
+// MARK: - Persistence Helpers
+fileprivate struct StoredRecipeStep: Codable {
+    let id: UUID
+    let instruction: String
+    let timerMinutes: Int?
+}
+
+fileprivate struct StoredRecipeDetails: Codable {
+    var steps: [StoredRecipeStep]
+    var notes: String?
+}
+
+private let recipeDetailsDecoder = JSONDecoder()
+private let recipeDetailsEncoder = JSONEncoder()
+private let dietaryTagsDecoder = JSONDecoder()
+private let dietaryTagsEncoder = JSONEncoder()
+
+fileprivate enum RecipeImageStore {
+    private static let folderName = "RecipeImages"
+
+    static func saveImage(data: Data, for recipeID: UUID, replacing existingPath: String?) throws -> String {
+        _ = FileManager.default
+        let directoryURL = try imagesDirectoryURL()
+
+        // Remove previous image if requested
+        if let path = existingPath {
+            deleteImage(at: path)
+        }
+
+        let fileName = "\(recipeID.uuidString).jpg"
+        let fileURL = directoryURL.appendingPathComponent(fileName, isDirectory: false)
+        try data.write(to: fileURL, options: .atomic)
+        return fileName
+    }
+
+    static func loadImage(path: String?) -> UIImage? {
+        guard let path, !path.isEmpty else { return nil }
+
+        if path.hasPrefix("http"), let url = URL(string: path), let data = try? Data(contentsOf: url) {
+            return UIImage(data: data)
+        }
+
+        if path.hasPrefix("data:image"),
+           let base64 = path.components(separatedBy: ",").last,
+           let data = Data(base64Encoded: base64) {
+            return UIImage(data: data)
+        }
+
+        guard
+            let directoryURL = try? imagesDirectoryURL(),
+            let data = try? Data(contentsOf: directoryURL.appendingPathComponent(path)),
+            let image = UIImage(data: data)
+        else { return nil }
+
+        return image
+    }
+
+    static func deleteImage(at path: String?) {
+        guard
+            let path,
+            !path.isEmpty,
+            let directoryURL = try? imagesDirectoryURL()
+        else { return }
+
+        let fileURL = directoryURL.appendingPathComponent(path)
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    private static func imagesDirectoryURL() throws -> URL {
+        let fileManager = FileManager.default
+        let baseURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let directoryURL = baseURL.appendingPathComponent(folderName, isDirectory: true)
+        if !fileManager.fileExists(atPath: directoryURL.path) {
+            try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        }
+        return directoryURL
+    }
+}
+
+fileprivate func parseAmountString(_ text: String) -> Double? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    
+    if let value = Double(trimmed) {
+        return value
+    }
+    
+    // Mixed fraction (e.g., "1 1/2")
+    let components = trimmed.split(separator: " ")
+    if components.count == 2,
+       let whole = Double(components[0]),
+       let fraction = parseFraction(String(components[1])) {
+        return whole + fraction
+    }
+    
+    return parseFraction(trimmed)
+}
+
+fileprivate func parseFraction(_ text: String) -> Double? {
+    let parts = text.split(separator: "/")
+    guard parts.count == 2,
+          let numerator = Double(parts[0].trimmingCharacters(in: .whitespaces)),
+          let denominator = Double(parts[1].trimmingCharacters(in: .whitespaces)),
+          denominator != 0 else {
+        return nil
+    }
+    return numerator / denominator
 }
 
 // MARK: - Main Tab View Wrapper
@@ -718,20 +937,9 @@ struct ModernRecipeCard: View {
         Button(role: .none, action: { showingDetail = true }) {
             HStack(spacing: 12) {
                 // Compact Recipe Image
-                AsyncImage(url: URL(string: recipe.imageUrl ?? "")) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(DesignSystem.Colors.backgroundSecondary)
-                        .overlay(
-                            Image(systemName: "photo")
-                                .foregroundColor(DesignSystem.Colors.textSecondary)
-                        )
-                }
-                .frame(width: 60, height: 60)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                RecipeCardImage(path: recipe.imageUrl)
+                    .frame(width: 60, height: 60)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 
                 // Recipe Info
                 VStack(alignment: .leading, spacing: 4) {
@@ -813,6 +1021,41 @@ struct ModernRecipeCard: View {
     }
 }
 
+private struct RecipeCardImage: View {
+    let path: String?
+    
+    var body: some View {
+        Group {
+            if let path,
+               path.hasPrefix("http"),
+               let url = URL(string: path) {
+                AsyncImage(url: url) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    placeholder
+                }
+            } else if let image = RecipeImageStore.loadImage(path: path) {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                placeholder
+            }
+        }
+    }
+    
+    private var placeholder: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(DesignSystem.Colors.backgroundSecondary)
+            .overlay(
+                Image(systemName: "photo")
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+            )
+    }
+}
+
 // MARK: - Empty State Views
 struct ModernEmptyRecipesView: View {
     var body: some View {
@@ -870,18 +1113,20 @@ struct ModernAddRecipeView: View {
     let editingRecipe: Recipe?
     
     @State private var name = ""
-    @State private var description = ""
+    @State private var recipeDescription = ""
     @State private var selectedCategory: RecipeCategory = .dinner
     @State private var rating = 0
     @State private var imageItem: PhotosPickerItem?
-    @State private var imageUrl: String = ""
+    @State private var imagePreview: UIImage?
+    @State private var existingImagePath: String = ""
+    @State private var selectedImageData: Data?
     @State private var ingredients: [RecipeIngredientData] = []
     @State private var steps: [RecipeStep] = []
     @State private var prepTime = 0
     @State private var cookTime = 0
     @State private var servings = 4
     @State private var selectedTags: Set<DietaryTag> = []
-    @State private var notes = ""
+    @State private var notesText = ""
     
     init(editingRecipe: Recipe? = nil) {
         self.editingRecipe = editingRecipe
@@ -895,9 +1140,15 @@ struct ModernAddRecipeView: View {
                         imageSection
                     }
                     .onChange(of: imageItem) { _, newItem in
+                        guard let newItem else {
+                            selectedImageData = nil
+                            return
+                        }
                         Task {
-                            if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                                imageUrl = "data:image/jpeg;base64,\(data.base64EncodedString())"
+                            if let data = try? await newItem.loadTransferable(type: Data.self),
+                               let image = UIImage(data: data) {
+                                selectedImageData = data
+                                imagePreview = image
                             }
                         }
                     }
@@ -907,7 +1158,7 @@ struct ModernAddRecipeView: View {
                             .textFieldStyle(MinimalistInputFieldStyle(state: .normal))
                             .font(DesignSystem.Typography.title2)
                         
-                        TextField("Description", text: $description, axis: .vertical)
+                        TextField("Description", text: $recipeDescription, axis: .vertical)
                             .textFieldStyle(MinimalistInputFieldStyle(state: .normal))
                             .lineLimit(3...6)
 
@@ -1004,7 +1255,7 @@ struct ModernAddRecipeView: View {
                         Text("Notes")
                             .font(DesignSystem.Typography.title3)
                             .fontWeight(.semibold)
-                        TextField("Additional notes or modifications...", text: $notes, axis: .vertical)
+                        TextField("Additional notes or modifications...", text: $notesText, axis: .vertical)
                             .textFieldStyle(MinimalistInputFieldStyle(state: .normal))
                             .lineLimit(3...6)
                     }
@@ -1043,21 +1294,24 @@ struct ModernAddRecipeView: View {
     
     private var imageSection: some View {
         Group {
-            if !imageUrl.isEmpty {
-                AsyncImage(url: URL(string: imageUrl)) { image in
-                    image
-                        .resizable()
-                        .scaledToFill()
-                        .frame(height: 220)
-                        .clipped()
-                        .cornerRadius(DesignSystem.CornerRadius.md)
-                } placeholder: {
-                    imagePlaceholder
-                }
+            if let image = currentImagePreview {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(height: 220)
+                    .clipped()
+                    .cornerRadius(DesignSystem.CornerRadius.md)
             } else {
                 imagePlaceholder
             }
         }
+    }
+    
+    private var currentImagePreview: UIImage? {
+        if let imagePreview {
+            return imagePreview
+        }
+        return RecipeImageStore.loadImage(path: existingImagePath)
     }
     
     private var imagePlaceholder: some View {
@@ -1096,77 +1350,93 @@ struct ModernAddRecipeView: View {
     private func loadRecipeData() {
         guard let recipe = editingRecipe else { return }
         name = recipe.name ?? ""
-        description = recipe.recipeDescription ?? ""
-        imageUrl = recipe.imageUrl ?? ""
+        recipeDescription = recipe.recipeDescription ?? ""
+        existingImagePath = recipe.imageUrl ?? ""
+        imagePreview = RecipeImageStore.loadImage(path: existingImagePath)
         rating = Int(recipe.rating)
         prepTime = Int(recipe.prepTime)
         cookTime = Int(recipe.cookTime)
         servings = Int(recipe.servings ?? "1") ?? 1
-        notes = recipe.instructions ?? ""
+        notesText = recipe.recipeNotes
+        selectedTags = recipe.dietaryTagsSet
+        steps = recipe.recipeSteps
+        if steps.isEmpty, !recipe.recipeNotes.isEmpty {
+            steps = [
+                RecipeStep(
+                    instruction: recipe.recipeNotes
+                )
+            ]
+        }
         
         if let category = RecipeCategory.allCases.first(where: { $0.rawValue == recipe.cuisine }) {
             selectedCategory = category
         }
         
-        // Load ingredients from Core Data relationship
         if let recipeIngredients = recipe.ingredients?.allObjects as? [RecipeIngredient] {
             ingredients = recipeIngredients.map { ingredient in
                 RecipeIngredientData(
                     name: ingredient.name ?? "",
-                    amount: String(ingredient.amount),
+                    amount: ingredient.notes?.isEmpty == false ? ingredient.notes! : ingredient.formattedAmount,
                     unit: ingredient.unit ?? ""
                 )
             }
         }
-        
-        // For now, we'll use a simple step from instructions
-        if let instructions = recipe.instructions, !instructions.isEmpty {
-            steps = [RecipeStep(
-                instruction: instructions
-            )]
-        }
-        
-        // Initialize with empty tags for now
-        selectedTags = Set<DietaryTag>()
     }
 
     private func saveRecipe() {
         let recipe = editingRecipe ?? Recipe(context: viewContext)
         
-        if editingRecipe == nil {
-        recipe.id = UUID()
+        if recipe.id == nil {
+            recipe.id = UUID()
             recipe.createdDate = Date()
         }
         
         recipe.name = name
-        recipe.recipeDescription = description
+        recipe.recipeDescription = recipeDescription
         recipe.cuisine = selectedCategory.rawValue
         recipe.rating = Int16(rating)
         recipe.modifiedDate = Date()
-        recipe.imageUrl = imageUrl
         recipe.prepTime = Int16(prepTime)
         recipe.cookTime = Int16(cookTime)
         recipe.servings = String(servings)
-        recipe.instructions = notes
+        let cleanedSteps = steps.filter { !$0.instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        recipe.updateDetails(steps: cleanedSteps, notes: notesText)
+        recipe.updateDietaryTags(selectedTags)
         
-        // Clear existing ingredients and add new ones
-        if let existingIngredients = recipe.ingredients?.allObjects as? [RecipeIngredient] {
-            for ingredient in existingIngredients {
-                viewContext.delete(ingredient)
-            }
+        if let data = selectedImageData,
+           let recipeID = recipe.id,
+           let path = try? RecipeImageStore.saveImage(data: data, for: recipeID, replacing: recipe.imageUrl) {
+            recipe.imageUrl = path
+            existingImagePath = path
+            imagePreview = UIImage(data: data)
+            selectedImageData = nil
+        } else if let currentPath = recipe.imageUrl, currentPath.isEmpty {
+            recipe.imageUrl = nil
+        } else if recipe.imageUrl == nil && !existingImagePath.isEmpty {
+            recipe.imageUrl = existingImagePath
         }
         
-        // Add new ingredients
+        if let existingIngredients = recipe.ingredients?.allObjects as? [RecipeIngredient] {
+            existingIngredients.forEach(viewContext.delete)
+        }
+        
         for ingredientData in ingredients {
             let ingredient = RecipeIngredient(context: viewContext)
             ingredient.id = UUID()
             ingredient.name = ingredientData.name
-            ingredient.amount = Double(ingredientData.amount) ?? 0.0
+            let rawAmount = ingredientData.amount.trimmingCharacters(in: .whitespacesAndNewlines)
+            ingredient.amount = parseAmountString(rawAmount) ?? 0.0
+            ingredient.notes = rawAmount
             ingredient.unit = ingredientData.unit
             ingredient.recipe = recipe
         }
         
-        do { try viewContext.save(); dismiss() } catch { print(error) }
+        do {
+            try viewContext.save()
+            dismiss()
+        } catch {
+            print(error)
+        }
     }
 }
 
@@ -1411,19 +1681,39 @@ struct ModernRecipeDetailView: View {
         NavigationStack {
         ScrollView {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.xl) {
-                if let imageUrl = recipe.imageUrl, !imageUrl.isEmpty {
-                    AsyncImage(url: URL(string: imageUrl)) { image in
+                if let image = RecipeImageStore.loadImage(path: recipe.imageUrl) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(height: 300)
+                        .clipped()
+                        .cornerRadius(DesignSystem.CornerRadius.md)
+                        .shadow(radius: 4, y: 2)
+                } else if let imageUrl = recipe.imageUrl,
+                          imageUrl.hasPrefix("http"),
+                          let url = URL(string: imageUrl) {
+                    AsyncImage(url: url) { image in
                         image
                             .resizable()
                             .scaledToFill()
-                                .frame(height: 300)
-                            .clipped()
                     } placeholder: {
-                            Rectangle()
+                        Rectangle()
                             .fill(DesignSystem.Colors.backgroundSecondary)
-                                .frame(height: 300)
-                        }
                     }
+                    .frame(height: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md))
+                    .shadow(radius: 4, y: 2)
+                } else {
+                    Rectangle()
+                        .fill(DesignSystem.Colors.backgroundSecondary)
+                        .frame(height: 300)
+                        .overlay(
+                            Image(systemName: "photo")
+                                .font(.title)
+                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md))
+                }
                     
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.lg) {
                         VStack(alignment: .leading, spacing: 8) {
@@ -1510,8 +1800,6 @@ struct ModernRecipeDetailView: View {
                         
                         // Dietary tags removed - not in Core Data model
                         
-                        Divider()
-                        
                         let ingredients = recipe.ingredientsArray
                         if !ingredients.isEmpty {
                             VStack(alignment: .leading, spacing: 12) {
@@ -1560,38 +1848,67 @@ struct ModernRecipeDetailView: View {
                         }
                         
                         Divider()
-
-                if let instructions = recipe.instructions, !instructions.isEmpty {
+                        
+                        let steps = recipe.recipeSteps
+                        if !steps.isEmpty {
                             VStack(alignment: .leading, spacing: 16) {
-                        Text("Instructions")
+                                Text("Instructions")
                                     .font(DesignSystem.Typography.title2)
-                            .fontWeight(.semibold)
+                                    .fontWeight(.semibold)
                                 
-                        Text(instructions)
-                            .font(DesignSystem.Typography.body)
-                    }
-                            
-                            Button(action: { showCookMode = true }) {
-                                HStack {
-                                    Image(systemName: "play.fill")
-                                    Text("Start Cook Mode")
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                                Text("\(index + 1).")
+                                                    .font(DesignSystem.Typography.body)
+                                                    .fontWeight(.semibold)
+                                                    .foregroundStyle(DesignSystem.Colors.accent)
+                                                Text(step.instruction)
+                                                    .font(DesignSystem.Typography.body)
+                                                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                                            }
+                                            
+                                            if let timer = step.timerMinutes, timer > 0 {
+                                                Label("\(timer) minute timer", systemImage: "timer")
+                                                    .font(DesignSystem.Typography.caption)
+                                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                                            }
+                                        }
+                                    }
                                 }
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                                .background(
-                                    LinearGradient(
-                                        colors: [DesignSystem.Colors.accent, DesignSystem.Colors.accent.opacity(0.8)],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
+                                
+                                Button(action: { showCookMode = true }) {
+                                    HStack {
+                                        Image(systemName: "play.fill")
+                                        Text("Start Cook Mode")
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(
+                                        LinearGradient(
+                                            colors: [DesignSystem.Colors.accent, DesignSystem.Colors.accent.opacity(0.8)],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
                                     )
-                                )
-                        .foregroundColor(.white)
-                                .cornerRadius(DesignSystem.CornerRadius.lg)
-                                .shadow(color: DesignSystem.Colors.accent.opacity(0.3), radius: 8, x: 0, y: 4)
-                }
+                                    .foregroundColor(.white)
+                                    .cornerRadius(DesignSystem.CornerRadius.lg)
+                                    .shadow(color: DesignSystem.Colors.accent.opacity(0.3), radius: 8, x: 0, y: 4)
+                                }
+                            }
                         }
                         
-                        // Notes section removed - not in Core Data model
+                        if !recipe.recipeNotes.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Notes")
+                                    .font(DesignSystem.Typography.title3)
+                                    .fontWeight(.semibold)
+                                Text(recipe.recipeNotes)
+                                    .font(DesignSystem.Typography.body)
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                            }
+                        }
             }
             .padding(DesignSystem.Spacing.lg)
                 }
@@ -1643,17 +1960,29 @@ struct ModernRecipeDetailView: View {
     }
     
     private func scaledIngredient(_ ingredient: RecipeIngredient) -> String {
-        guard let servingsString = recipe.servings,
-              let originalServings = Double(servingsString),
-              originalServings > 0 else {
-            return "\(ingredient.amount) \(ingredient.unit ?? "") \(ingredient.name ?? "")"
+        let unit = ingredient.unit ?? ""
+        let name = ingredient.name ?? ""
+        let rawAmount = ingredient.rawAmountString
+        
+        guard
+            let servingsString = recipe.servings,
+            let originalServings = Double(servingsString),
+            originalServings > 0,
+            let baseAmount = parseAmountString(rawAmount)
+        else {
+            return "\(rawAmount) \(unit) \(name)".trimmingCharacters(in: .whitespaces)
         }
         
         let scale = Double(currentServings) / originalServings
-        let amount = ingredient.amount
-        let scaled = amount * scale
-        let formatted = scaled.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(scaled)) : String(format: "%.1f", scaled)
-        return "\(formatted) \(ingredient.unit ?? "") \(ingredient.name ?? "")"
+        let scaled = baseAmount * scale
+        let formatted: String
+        if scaled.truncatingRemainder(dividingBy: 1) == 0 {
+            formatted = String(Int(scaled))
+        } else {
+            formatted = String(format: "%.2f", scaled)
+        }
+        
+        return "\(formatted) \(unit) \(name)".trimmingCharacters(in: .whitespaces)
     }
     
     private func toggleFavorite() {
@@ -1687,7 +2016,7 @@ struct ModernRecipeDetailView: View {
 // MARK: - Add Recipe Ingredients to Shopping List
 struct AddRecipeIngredientsToListView: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("shoppingListData") private var shoppingListData = ""
+    @Environment(\.managedObjectContext) private var viewContext
     let recipe: Recipe
     
     var body: some View {
@@ -1734,31 +2063,27 @@ struct AddRecipeIngredientsToListView: View {
     
     private func addIngredientsToList() {
         let ingredients = recipe.ingredientsArray
-        
-        var currentList: [ShoppingListItem] = []
-        if let data = shoppingListData.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode([ShoppingListItem].self, from: data) {
-            currentList = decoded
-        }
+        let now = Date()
         
         for ingredient in ingredients {
-            let item = ShoppingListItem(
-                name: ingredient.name ?? "",
-                amount: String(ingredient.amount),
-                unit: ingredient.unit ?? "",
-                category: "Groceries",
-                fromRecipe: recipe.name ?? ""
-            )
-            currentList.append(item)
+            let item = ShoppingItemEntity(context: viewContext)
+            item.id = UUID()
+            item.createdDate = now
+            item.name = ingredient.name ?? ""
+            item.amount = ingredient.rawAmountString
+            item.unit = ingredient.unit ?? ""
+            item.category = "Groceries"
+            item.fromRecipe = recipe.name
+            item.isChecked = false
         }
         
-        if let encoded = try? JSONEncoder().encode(currentList),
-           let jsonString = String(data: encoded, encoding: .utf8) {
-            shoppingListData = jsonString
+        do {
+            try viewContext.save()
+            lightHaptic()
+            dismiss()
+        } catch {
+            print("Failed to add ingredients: \(error.localizedDescription)")
         }
-        
-        lightHaptic()
-        dismiss()
     }
 }
 
@@ -2033,9 +2358,13 @@ struct EnhancedCookModeView: View {
     }
     
     private func loadSteps() {
-        // Load steps from instructions
-        if let instructions = recipe.instructions, !instructions.isEmpty {
+        let storedSteps = recipe.recipeSteps
+        if !storedSteps.isEmpty {
+            steps = storedSteps
+        } else if let instructions = recipe.instructions, !instructions.isEmpty {
             steps = [RecipeStep(instruction: instructions)]
+        } else {
+            steps = []
         }
     }
     
@@ -2056,92 +2385,616 @@ struct EnhancedCookModeView: View {
 
 // MARK: - Shopping List View
 struct ShoppingListMainView: View {
-    @AppStorage("shoppingListData") private var shoppingListData = ""
-    @State private var shoppingItems: [ShoppingListItem] = []
-    @State private var showingAdd = false
+    @Environment(\.managedObjectContext) private var viewContext
+    @FetchRequest(
+        sortDescriptors: [
+            NSSortDescriptor(keyPath: \ShoppingItemEntity.isChecked, ascending: true),
+            NSSortDescriptor(keyPath: \ShoppingItemEntity.createdDate, ascending: false)
+        ],
+        animation: .spring()
+    )
+    private var shoppingItems: FetchedResults<ShoppingItemEntity>
+    
+    @State private var quickName = ""
+    @State private var quickAmount = ""
+    @State private var quickUnit = ""
+    @State private var quickCategory: ShoppingCategory = .general
+    @State private var quickCustomCategory = ""
+    @FocusState private var quickNameFocused: Bool
+
+    private var uncheckedCount: Int {
+        shoppingItems.filter { !$0.isChecked }.count
+    }
+
+    private var groupedItems: [(category: String, items: [ShoppingItemEntity])] {
+        let groups = Dictionary(grouping: shoppingItems) { item in
+            let raw = item.category?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return raw?.isEmpty == false ? raw! : "General"
+        }
+
+        return groups
+            .map { entry in
+                (category: entry.key,
+                 items: entry.value.sorted {
+                    ($0.isChecked ? 1 : 0, $0.createdDate ?? .distantPast) <
+                    ($1.isChecked ? 1 : 0, $1.createdDate ?? .distantPast)
+                 })
+            }
+            .sorted { lhs, rhs in
+                lhs.category.localizedCaseInsensitiveCompare(rhs.category) == .orderedAscending
+            }
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach($shoppingItems) { $item in
-                    HStack {
-                        Button(action: { item.isChecked.toggle(); saveList() }) {
-                            Image(systemName: item.isChecked ? "checkmark.circle.fill" : "circle")
-                                .foregroundColor(item.isChecked ? .green : .gray)
-                        }
-                        VStack(alignment: .leading) {
-                            Text(item.name)
-                                .font(.headline)
-                            if !item.amount.isEmpty {
-                                Text("\(item.amount) \(item.unit)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                    Section {
+                        QuickAddShoppingItemRow(
+                            name: $quickName,
+                            amount: $quickAmount,
+                            unit: $quickUnit,
+                            selectedCategory: $quickCategory,
+                            customCategory: $quickCustomCategory,
+                            onCommit: addQuickItem,
+                            isNameFocused: $quickNameFocused
+                        )
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                    } header: {
+                        ShoppingListSummaryHeader(
+                            totalItems: shoppingItems.count,
+                            uncheckedCount: uncheckedCount
+                        )
+                    }
+
+                    if shoppingItems.isEmpty {
+                        EmptyShoppingListView(onAdd: { quickNameFocused = true })
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    } else {
+                        ForEach(groupedItems, id: \.category) { group in
+                            Section(header: ShoppingListSectionHeader(
+                                category: group.category,
+                                uncheckedCount: group.items.filter { !$0.isChecked }.count
+                            )) {
+                                ForEach(group.items) { item in
+                                    ShoppingListRow(
+                                        item: item,
+                                        onToggle: { toggle(item) }
+                                    )
+                                    .listRowSeparator(.hidden)
+                                    .listRowBackground(Color.clear)
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                        Button(role: .destructive) {
+                                            deleteItem(item)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                                }
                             }
                         }
-                        Spacer()
-                        if let recipe = item.fromRecipe {
-                            Text(recipe)
-                                .font(.caption2)
-                                .foregroundColor(.gray)
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .contentMargins(.horizontal, DesignSystem.Spacing.lg)
+                .listRowInsets(EdgeInsets())
+                .safeAreaInset(edge: .bottom) {
+                    ShoppingListFooterBar(
+                        itemCount: shoppingItems.count,
+                        incompleteCount: uncheckedCount,
+                        onClear: deleteAllItems
+                    )
+                }
+                .navigationTitle("Shopping List")
+        }
+    }
+
+    private func addQuickItem() {
+        let trimmedName = quickName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCustomCategory = quickCustomCategory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        if quickCategory == .other && trimmedCustomCategory.isEmpty { return }
+
+        let item = ShoppingItemEntity(context: viewContext)
+        item.id = UUID()
+        item.createdDate = Date()
+        item.name = trimmedName
+        item.amount = quickAmount.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.unit = quickUnit.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedCategory: String = {
+            if quickCategory == .other {
+                return trimmedCustomCategory.isEmpty ? "Other" : trimmedCustomCategory
+            } else {
+                return quickCategory.rawValue
+            }
+        }()
+        item.category = resolvedCategory
+        item.isChecked = false
+
+        do {
+            try viewContext.save()
+            lightHaptic()
+            quickName = ""
+            quickAmount = ""
+            quickUnit = ""
+            quickCategory = .general
+            quickCustomCategory = ""
+            quickNameFocused = true
+        } catch {
+            print("Failed to save quick item: \(error.localizedDescription)")
+        }
+    }
+
+    private func toggle(_ item: ShoppingItemEntity) {
+        lightHaptic()
+        item.isChecked.toggle()
+        saveContext()
+    }
+
+    private func deleteItem(_ item: ShoppingItemEntity) {
+            viewContext.delete(item)
+        saveContext()
+    }
+
+    private func deleteAllItems() {
+        guard !shoppingItems.isEmpty else { return }
+        shoppingItems.forEach(viewContext.delete)
+        saveContext()
+    }
+    
+    private func saveContext() {
+        do {
+            try viewContext.save()
+        } catch {
+            print("Failed to save shopping items: \(error.localizedDescription)")
+        }
+    }
+}
+
+private struct EmptyShoppingListView: View {
+    let onAdd: () -> Void
+    
+    var body: some View {
+        VStack(spacing: DesignSystem.Spacing.md) {
+            Image(systemName: "cart")
+                .font(.system(size: 48, weight: .semibold))
+                .foregroundColor(DesignSystem.Colors.accent)
+            
+            VStack(spacing: DesignSystem.Spacing.xs) {
+                Text("Your list is empty")
+                    .font(DesignSystem.Typography.title3)
+                    .fontWeight(.semibold)
+                Text("Add items manually or from a recipe to start planning your next grocery run.")
+                    .font(DesignSystem.Typography.body)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, DesignSystem.Spacing.lg)
+            
+            Button(action: onAdd) {
+                Label("Add Item", systemImage: "plus")
+                    .font(DesignSystem.Typography.body)
+                    .fontWeight(.semibold)
+                    .padding(.horizontal, DesignSystem.Spacing.xl)
+                    .padding(.vertical, DesignSystem.Spacing.sm)
+                    .background(DesignSystem.Colors.accent)
+                    .foregroundColor(.white)
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(DesignSystem.Spacing.lg)
+        .frame(maxWidth: .infinity, minHeight: 220)
+        .background(
+            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
+                .fill(DesignSystem.Colors.backgroundSecondary)
+        )
+    }
+}
+
+private struct ShoppingListFooterBar: View {
+    let itemCount: Int
+    let incompleteCount: Int
+    let onClear: () -> Void
+    
+    private var statusText: String {
+        if itemCount == 0 {
+            return "No items yet"
+        } else if incompleteCount == 0 {
+            return "\(itemCount) item\(itemCount == 1 ? "" : "s") • all checked"
+        } else {
+            return "\(itemCount) item\(itemCount == 1 ? "" : "s") • \(incompleteCount) to pick up"
+        }
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider().opacity(0)
+            
+            HStack(spacing: DesignSystem.Spacing.md) {
+                Label {
+                    Text(statusText)
+                        .font(DesignSystem.Typography.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                } icon: {
+                    Image(systemName: "cart")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundColor(DesignSystem.Colors.accent)
+                }
+                
+                Spacer()
+                
+                Button(role: .destructive) {
+                    guard itemCount > 0 else { return }
+                    lightHaptic()
+                    onClear()
+                } label: {
+                    Label("Clear List", systemImage: "trash")
+                        .font(DesignSystem.Typography.caption)
+                        .fontWeight(.semibold)
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 16)
+                        .background(
+                            Capsule()
+                                .fill(DesignSystem.Colors.backgroundSecondary)
+                        )
+                }
+                .disabled(itemCount == 0)
+                .opacity(itemCount == 0 ? 0.4 : 1)
+            }
+            .padding(.horizontal, DesignSystem.Spacing.lg)
+            .padding(.top, DesignSystem.Spacing.md)
+            .padding(.bottom, DesignSystem.Spacing.lg)
+        }
+        .background(.ultraThinMaterial)
+        .background(
+            Color(.systemBackground)
+                .opacity(0.9)
+        )
+        .overlay(
+            Divider()
+                .padding(.top, -0.5),
+            alignment: .top
+        )
+        .shadow(color: Color.black.opacity(0.04), radius: 18, y: -6)
+    }
+}
+
+private struct ShoppingListSummaryHeader: View {
+    let totalItems: Int
+    let uncheckedCount: Int
+
+    private var statusText: String {
+        if totalItems == 0 { return "Ready to start shopping?" }
+        if uncheckedCount == 0 { return "All items checked off!" }
+        return "\(uncheckedCount) to pick up"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Grocery Run")
+                .font(DesignSystem.Typography.caption)
+                .foregroundColor(DesignSystem.Colors.textSecondary)
+
+            HStack(spacing: 8) {
+                Text(statusText)
+                    .font(DesignSystem.Typography.headline)
+                    .fontWeight(.semibold)
+
+                Spacer()
+
+                if totalItems > 0 {
+                    Text("\(totalItems) items total")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                }
+            }
+        }
+        .padding(.horizontal, DesignSystem.Spacing.sm)
+        .padding(.bottom, DesignSystem.Spacing.xs)
+    }
+}
+
+private struct ShoppingListSectionHeader: View {
+    let category: String
+    let uncheckedCount: Int
+
+    var body: some View {
+        HStack {
+            Text(category)
+                .font(DesignSystem.Typography.caption)
+                .fontWeight(.medium)
+                .foregroundColor(DesignSystem.Colors.textSecondary)
+
+            if uncheckedCount > 0 {
+                Text("\(uncheckedCount) remaining")
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundColor(DesignSystem.Colors.textTertiary)
+            }
+        }
+        .padding(.horizontal, DesignSystem.Spacing.sm)
+        .padding(.top, DesignSystem.Spacing.xs)
+    }
+}
+
+private struct QuickAddShoppingItemRow: View {
+    @Binding var name: String
+    @Binding var amount: String
+    @Binding var unit: String
+    @Binding var selectedCategory: ShoppingCategory
+    @Binding var customCategory: String
+    let onCommit: () -> Void
+    @FocusState.Binding var isNameFocused: Bool
+
+    private var canSubmit: Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCustom = customCategory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedName.isEmpty { return false }
+        if selectedCategory == .other && trimmedCustom.isEmpty { return false }
+        return true
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            Text("Quick Add")
+                .font(DesignSystem.Typography.caption)
+                .foregroundColor(DesignSystem.Colors.textSecondary)
+
+            VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                TextField("Add an item (e.g. \"Eggs\")", text: $name)
+                    .focused($isNameFocused)
+                    .submitLabel(.done)
+                    .onSubmit { if canSubmit { onCommit() } }
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .padding(.horizontal, DesignSystem.Spacing.md)
+                    .padding(.vertical, DesignSystem.Spacing.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                            .fill(DesignSystem.Colors.backgroundTertiary)
+                    )
+
+                HStack(spacing: DesignSystem.Spacing.sm) {
+                    TextField("Qty", text: $amount)
+                        .submitLabel(.next)
+                        .onSubmit { if canSubmit { onCommit() } }
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .padding(.horizontal, DesignSystem.Spacing.md)
+                        .padding(.vertical, DesignSystem.Spacing.sm)
+                        .frame(width: 90)
+                        .background(
+                            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                                .fill(DesignSystem.Colors.backgroundTertiary)
+                        )
+
+                    TextField("Unit", text: $unit)
+                        .submitLabel(.next)
+                        .onSubmit { if canSubmit { onCommit() } }
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .padding(.horizontal, DesignSystem.Spacing.md)
+                        .padding(.vertical, DesignSystem.Spacing.sm)
+                        .frame(width: 90)
+                        .background(
+                            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                                .fill(DesignSystem.Colors.backgroundTertiary)
+                        )
+
+                    Spacer(minLength: 0)
+                }
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: DesignSystem.Spacing.sm) {
+                        ForEach(ShoppingCategory.allCases, id: \.self) { category in
+                            let isSelected = selectedCategory == category
+                            Button {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                    selectedCategory = category
+                                }
+                            } label: {
+                                Label(category.rawValue, systemImage: category.icon)
+                                    .font(DesignSystem.Typography.caption)
+                                    .fontWeight(.medium)
+                                    .padding(.horizontal, DesignSystem.Spacing.md)
+                                    .padding(.vertical, DesignSystem.Spacing.sm)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                                            .fill(isSelected ? DesignSystem.Colors.accent.opacity(0.18) : DesignSystem.Colors.backgroundTertiary)
+                                    )
+                                    .foregroundColor(isSelected ? DesignSystem.Colors.accent : DesignSystem.Colors.textSecondary)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
+                    .padding(.vertical, DesignSystem.Spacing.xs)
                 }
-                .onDelete(perform: deleteItems)
+
+                if selectedCategory == .other {
+                    TextField("Category name", text: $customCategory)
+                        .submitLabel(.done)
+                        .onSubmit { if canSubmit { onCommit() } }
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .padding(.horizontal, DesignSystem.Spacing.md)
+                        .padding(.vertical, DesignSystem.Spacing.sm)
+                        .background(
+                            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                                .fill(DesignSystem.Colors.backgroundTertiary)
+                        )
+                }
+
+                HStack {
+                    Spacer()
+                    Button(action: onCommit) {
+                        Label("Add Item", systemImage: "plus")
+                            .font(DesignSystem.Typography.caption)
+                            .fontWeight(.semibold)
+                            .padding(.horizontal, DesignSystem.Spacing.lg)
+                            .padding(.vertical, DesignSystem.Spacing.sm)
+                            .background(DesignSystem.Colors.accent)
+                            .foregroundColor(.white)
+                            .clipShape(Capsule())
+                    }
+                    .disabled(!canSubmit)
+                    .opacity(canSubmit ? 1 : 0.4)
+                }
             }
-            .navigationTitle("Shopping List")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingAdd = true }) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title3)
+            .padding(DesignSystem.Spacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.lg)
+                    .fill(DesignSystem.Colors.backgroundSecondary)
+            )
+        }
+        .padding(.vertical, DesignSystem.Spacing.sm)
+    }
+}
+
+private struct ShoppingListRow: View {
+    let item: ShoppingItemEntity
+    let onToggle: () -> Void
+
+    private var amountText: String? {
+        let amount = item.wrappedAmount
+        let unit = item.wrappedUnit
+        let combined = "\(amount) \(unit)".trimmingCharacters(in: .whitespaces)
+        return combined.isEmpty ? nil : combined
+    }
+
+    private var categoryText: String? {
+        let raw = (item.category ?? item.wrappedCategory).trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? nil : raw
+    }
+
+    var body: some View {
+        HStack(spacing: DesignSystem.Spacing.md) {
+            Button(action: onToggle) {
+                Image(systemName: item.isChecked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(item.isChecked ? DesignSystem.Colors.success : DesignSystem.Colors.textTertiary)
+                    .scaleEffect(item.isChecked ? 1.05 : 1.0)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: item.isChecked)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.wrappedName)
+                    .font(DesignSystem.Typography.body)
+                    .fontWeight(.medium)
+                    .foregroundColor(item.isChecked ? DesignSystem.Colors.textSecondary : DesignSystem.Colors.textPrimary)
+                    .strikethrough(item.isChecked, color: DesignSystem.Colors.textSecondary)
+
+                HStack(spacing: 8) {
+                    if let categoryText {
+                        InfoChip(text: categoryText, icon: "tag.fill")
+                    }
+                    if let amountText {
+                        InfoChip(text: amountText, icon: "scalemass")
+                    }
+
+                    if let source = item.recipeSource {
+                        InfoChip(text: source, icon: "book.fill")
                     }
                 }
             }
-            .onAppear(perform: loadList)
-            .sheet(isPresented: $showingAdd) {
-                AddShoppingItemView { item in
-                    shoppingItems.append(item)
-                    saveList()
-                    showingAdd = false
+
+            Spacer()
+        }
+        .padding(.vertical, DesignSystem.Spacing.sm)
+        .padding(.horizontal, DesignSystem.Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                .fill(DesignSystem.Colors.backgroundSecondary)
+        )
+    }
+}
+
+private struct InfoChip: View {
+    let text: String
+    let icon: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.caption2)
+            Text(text)
+                .font(DesignSystem.Typography.caption)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(DesignSystem.Colors.backgroundTertiary)
+        .foregroundColor(DesignSystem.Colors.textSecondary)
+        .clipShape(Capsule())
+    }
+}
+
+private struct PantryItemRow: View {
+    let item: PantryItemEntity
+
+    private var quantityText: String? {
+        let combined = "\(item.wrappedQuantity) \(item.wrappedUnit)".trimmingCharacters(in: .whitespaces)
+        return combined.isEmpty ? nil : combined
+    }
+
+    private var expirationText: String? {
+        guard let date = item.expirationDate else { return nil }
+        return "Expires \(DateFormatter.shortDate.string(from: date))"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            HStack {
+                Text(item.wrappedName)
+                    .font(DesignSystem.Typography.body)
+                    .fontWeight(.medium)
+                Spacer()
+                if let expirationText {
+                    InfoChip(text: expirationText, icon: "calendar")
                 }
             }
-        }
-    }
 
-    private func loadList() {
-        if let data = shoppingListData.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode([ShoppingListItem].self, from: data) {
-            shoppingItems = decoded
-        }
-    }
+            HStack(spacing: DesignSystem.Spacing.sm) {
+                if let quantityText {
+                    InfoChip(text: quantityText, icon: "scalemass")
+                }
 
-    private func saveList() {
-        if let encoded = try? JSONEncoder().encode(shoppingItems),
-           let jsonString = String(data: encoded, encoding: .utf8) {
-            shoppingListData = jsonString
-        }
-    }
+                InfoChip(text: item.wrappedCategory.rawValue, icon: item.wrappedCategory.icon)
+            }
 
-    private func deleteItems(at offsets: IndexSet) {
-        shoppingItems.remove(atOffsets: offsets)
-        saveList()
+            if !item.wrappedNotes.isEmpty {
+                Text(item.wrappedNotes)
+                    .font(DesignSystem.Typography.caption)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+            }
+        }
+        .padding(.vertical, DesignSystem.Spacing.sm)
+        .padding(.horizontal, DesignSystem.Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
+                .fill(DesignSystem.Colors.backgroundSecondary)
+        )
     }
 }
 
 struct AddShoppingItemView: View {
     @Environment(\.dismiss) private var dismiss
-    let onAdd: (ShoppingListItem) -> Void
+    @Environment(\.managedObjectContext) private var viewContext
     
     @State private var name = ""
     @State private var amount = ""
-    @State private var unit = "unit"
+    @State private var unit = ""
+    @State private var category = "Other"
     
     var body: some View {
         NavigationStack {
             Form {
-                TextField("Item Name", text: $name)
-                TextField("Amount", text: $amount)
-                TextField("Unit", text: $unit)
+                Section("Item") {
+                    TextField("Item Name", text: $name)
+                    TextField("Amount", text: $amount)
+                    TextField("Unit", text: $unit)
+                }
+                
+                Section("Category") {
+                    TextField("Category", text: $category)
+                }
             }
             .navigationTitle("Add Item")
             .toolbar {
@@ -2150,158 +3003,183 @@ struct AddShoppingItemView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Add") {
-                        onAdd(ShoppingListItem(name: name, amount: amount, unit: unit))
+                        addItem()
                     }
-                    .disabled(name.isEmpty)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+        }
+    }
+    
+    private func addItem() {
+        let item = ShoppingItemEntity(context: viewContext)
+        item.id = UUID()
+        item.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.amount = amount.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.unit = unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.category = category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Other" : category
+        item.createdDate = Date()
+        item.isChecked = false
+        
+        do {
+            try viewContext.save()
+            lightHaptic()
+            dismiss()
+        } catch {
+            print("Failed to save shopping item: \(error.localizedDescription)")
         }
     }
 }
 
 // MARK: - Pantry Main View (Fridge + Spices)
 struct PantryMainView: View {
+    @State private var selectedCategory: PantryCategory = .fridge
+    @State private var showingAddItem = false
+    
     var body: some View {
-        TabView {
-            FridgeView()
-                .tabItem { Label("Fridge", systemImage: "refrigerator.fill") }
-            
-            SpiceCabinetView()
-                .tabItem { Label("Spices", systemImage: "leaf.fill") }
+        NavigationStack {
+            PantrySectionView(
+                category: selectedCategory,
+                onAddTapped: { showingAddItem = true }
+            )
+            .navigationTitle(selectedCategory.navigationTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showingAddItem = true }) {
+                        Image(systemName: "plus.circle.fill")
+                    }
+                }
+            }
+            .safeAreaInset(edge: .top) {
+                VStack(spacing: 0) {
+                    Picker("Pantry Section", selection: $selectedCategory) {
+                        ForEach(PantryCategory.allCases, id: \.self) { category in
+                            Text(category.rawValue)
+                                .tag(category)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+                    .padding(.top, DesignSystem.Spacing.md)
+                    .padding(.bottom, DesignSystem.Spacing.sm)
+                }
+                .background(
+                    Color(.systemBackground)
+                        .opacity(0.95)
+                        .ignoresSafeArea()
+                )
+                .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 4)
+            }
+        }
+        .sheet(isPresented: $showingAddItem) {
+            AddPantryItemView(category: selectedCategory)
         }
     }
 }
 
-// MARK: - Fridge View
-struct FridgeView: View {
-    @AppStorage("fridgeData") private var fridgeData = ""
-    @State private var items: [PantryItem] = []
-    @State private var showingAdd = false
+// MARK: - Pantry Section View
+struct PantrySectionView: View {
+    @Environment(\.managedObjectContext) private var viewContext
+    @FetchRequest private var items: FetchedResults<PantryItemEntity>
+    
+    private let category: PantryCategory
+    private let onAddTapped: () -> Void
+    
+    init(category: PantryCategory, onAddTapped: @escaping () -> Void) {
+        self.category = category
+        self.onAddTapped = onAddTapped
+        _items = FetchRequest(
+            sortDescriptors: [
+                NSSortDescriptor(keyPath: \PantryItemEntity.expirationDate, ascending: true),
+                NSSortDescriptor(keyPath: \PantryItemEntity.createdDate, ascending: false)
+            ],
+            predicate: NSPredicate(format: "category == %@", category.rawValue),
+            animation: .default
+        )
+    }
     
     var body: some View {
-        NavigationStack {
             List {
+            if items.isEmpty {
+                EmptyPantrySectionView(category: category, onAdd: onAddTapped)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } else {
                 ForEach(items) { item in
-                    VStack(alignment: .leading) {
-                        Text(item.name)
-                            .font(.headline)
-                        HStack {
-                            Text("\(item.quantity) \(item.unit)")
-                            if let exp = item.expirationDate {
-                                Text("• Expires \(exp, style: .date)")
+                    PantryItemRow(item: item)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                deleteItem(item)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
                             }
                         }
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    }
-                }
-                .onDelete(perform: deleteItems)
-            }
-            .navigationTitle("What's in My Fridge")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingAdd = true }) {
-                        Image(systemName: "plus.circle.fill")
-                    }
-                }
-            }
-            .onAppear(perform: loadData)
-            .sheet(isPresented: $showingAdd) {
-                AddPantryItemView(category: .fridge) { item in
-                    items.append(item)
-                    saveData()
-                    showingAdd = false
                 }
             }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .padding(.bottom, 32)
     }
     
-    private func loadData() {
-        if let data = fridgeData.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode([PantryItem].self, from: data) {
-            items = decoded
+    private func deleteItem(_ item: PantryItemEntity) {
+        viewContext.delete(item)
+        saveContext()
+    }
+    
+    private func saveContext() {
+        do {
+            try viewContext.save()
+        } catch {
+            print("Failed to save pantry context: \(error.localizedDescription)")
         }
-    }
-    
-    private func saveData() {
-        if let encoded = try? JSONEncoder().encode(items),
-           let jsonString = String(data: encoded, encoding: .utf8) {
-            fridgeData = jsonString
-        }
-    }
-    
-    private func deleteItems(at offsets: IndexSet) {
-        items.remove(atOffsets: offsets)
-        saveData()
     }
 }
 
-// MARK: - Spice Cabinet View
-struct SpiceCabinetView: View {
-    @AppStorage("spiceData") private var spiceData = ""
-    @State private var spices: [PantryItem] = []
-    @State private var showingAdd = false
+private struct EmptyPantrySectionView: View {
+    let category: PantryCategory
+    let onAdd: () -> Void
     
     var body: some View {
-        NavigationStack {
-            List {
-                ForEach(spices) { spice in
-                    VStack(alignment: .leading) {
-                        Text(spice.name)
-                            .font(.headline)
-                        if !spice.quantity.isEmpty {
-                            Text("\(spice.quantity) \(spice.unit)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                .onDelete(perform: deleteItems)
+        VStack(spacing: 16) {
+            Image(systemName: category.icon)
+                .font(.system(size: 48))
+                .foregroundColor(DesignSystem.Colors.accent)
+            
+            VStack(spacing: 6) {
+                Text(category.emptyStateTitle)
+                    .font(DesignSystem.Typography.title3)
+                    .fontWeight(.semibold)
+                Text("Tap below to add your first item and start tracking what you have on hand.")
+                    .font(DesignSystem.Typography.body)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
             }
-            .navigationTitle("Spice Cabinet")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingAdd = true }) {
-                        Image(systemName: "plus.circle.fill")
-                    }
-                }
-            }
-            .onAppear(perform: loadData)
-            .sheet(isPresented: $showingAdd) {
-                AddPantryItemView(category: .spices) { spice in
-                    spices.append(spice)
-                    saveData()
-                    showingAdd = false
-                }
+            .padding(.horizontal, DesignSystem.Spacing.xl)
+            
+            Button(action: onAdd) {
+                Label("Add Item", systemImage: "plus.circle.fill")
+                    .font(DesignSystem.Typography.body)
+                    .padding(.horizontal, DesignSystem.Spacing.lg)
+                    .padding(.vertical, DesignSystem.Spacing.md)
+                    .background(DesignSystem.Colors.accent.opacity(0.15))
+                    .foregroundColor(DesignSystem.Colors.accent)
+                    .clipShape(Capsule())
             }
         }
-    }
-    
-    private func loadData() {
-        if let data = spiceData.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode([PantryItem].self, from: data) {
-            spices = decoded
-        }
-    }
-    
-    private func saveData() {
-        if let encoded = try? JSONEncoder().encode(spices),
-           let jsonString = String(data: encoded, encoding: .utf8) {
-            spiceData = jsonString
-        }
-    }
-    
-    private func deleteItems(at offsets: IndexSet) {
-        spices.remove(atOffsets: offsets)
-        saveData()
+        .frame(maxWidth: .infinity, minHeight: 280)
     }
 }
 
 // MARK: - Add Pantry Item View (Reusable)
 struct AddPantryItemView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.managedObjectContext) private var viewContext
+    
     let category: PantryCategory
-    let onAdd: (PantryItem) -> Void
     
     @State private var name = ""
     @State private var quantity = ""
@@ -2326,6 +3204,7 @@ struct AddPantryItemView: View {
                 }
                 Section("Notes") {
                     TextField("Notes", text: $notes, axis: .vertical)
+                        .lineLimit(3...5)
                 }
             }
             .navigationTitle("Add \(category.rawValue) Item")
@@ -2335,19 +3214,31 @@ struct AddPantryItemView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Add") {
-                        let item = PantryItem(
-                            name: name,
-                            quantity: quantity,
-                            unit: unit,
-                            category: category,
-                            expirationDate: hasExpiration ? expirationDate : nil,
-                            notes: notes
-                        )
-                        onAdd(item)
+                        addItem()
                     }
-                    .disabled(name.isEmpty)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+        }
+    }
+    
+    private func addItem() {
+        let item = PantryItemEntity(context: viewContext)
+        item.id = UUID()
+        item.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.quantity = quantity.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.unit = unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.category = category.rawValue
+        item.createdDate = Date()
+        item.expirationDate = hasExpiration ? expirationDate : nil
+        item.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        do {
+            try viewContext.save()
+            lightHaptic()
+            dismiss()
+        } catch {
+            print("Failed to save pantry item: \(error.localizedDescription)")
         }
     }
 }

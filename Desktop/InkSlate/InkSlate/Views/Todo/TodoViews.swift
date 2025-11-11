@@ -177,6 +177,19 @@ struct TodoMainView: View {
                 selectedTab = tabs.first
             }
         }
+        .onChange(of: tabs.map(\.objectID)) { _, _ in
+            guard !tabs.isEmpty else {
+                selectedTab = nil
+                return
+            }
+            
+            if let current = selectedTab,
+               tabs.contains(where: { $0.objectID == current.objectID }) {
+                return
+            }
+            
+            selectedTab = tabs.first
+        }
             .sheet(isPresented: $showingAddTask) {
                 AddTodoTaskView(selectedTab: selectedTab, availableTabs: Array(tabs))
                     .presentationDetents([.fraction(0.5), .large])
@@ -480,7 +493,11 @@ struct TodoTaskRow: View {
         newTask.notes = originalTask.notes
         newTask.tab = originalTask.tab
         newTask.createdDate = Date()
-        newTask.dueDate = nextDue
+        if originalTask.dueDate != nil {
+            newTask.dueDate = nextDue
+        } else {
+            newTask.dueDate = nil
+        }
         newTask.isCompleted = false
         newTask.recurrenceType = originalTask.recurrenceType
         newTask.recurrenceRule = originalTask.recurrenceRule
@@ -522,7 +539,7 @@ struct AddTodoTaskView: View {
     let availableTabs: [TodoTab]
     @State private var title = ""
     @State private var notes = ""
-    @State private var selectedTabForTask: TodoTab?
+    @State private var selectedTabID: NSManagedObjectID?
     @State private var showingError = false
     @State private var errorMessage = ""
     
@@ -576,6 +593,39 @@ struct AddTodoTaskView: View {
                     .padding(DesignSystem.Spacing.lg)
                     .background(DesignSystem.Colors.surface)
                     .cornerRadius(DesignSystem.CornerRadius.md)
+                    
+                    if availableTabs.isEmpty {
+                        VStack(spacing: DesignSystem.Spacing.md) {
+                            Text("No lists available")
+                                .font(DesignSystem.Typography.body)
+                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                            Text("Create a to-do list before adding tasks.")
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundColor(DesignSystem.Colors.textTertiary)
+                        }
+                        .padding(DesignSystem.Spacing.lg)
+                        .frame(maxWidth: .infinity)
+                        .background(DesignSystem.Colors.backgroundSecondary)
+                        .cornerRadius(DesignSystem.CornerRadius.md)
+                    } else {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                            Text("List")
+                                .font(DesignSystem.Typography.headline)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                            
+                            Picker("List", selection: $selectedTabID) {
+                                ForEach(availableTabs, id: \.objectID) { tab in
+                                    Text(tab.name ?? "Untitled List")
+                                        .tag(Optional(tab.objectID))
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                        }
+                        .padding(DesignSystem.Spacing.lg)
+                        .background(DesignSystem.Colors.surface)
+                        .cornerRadius(DesignSystem.CornerRadius.md)
+                    }
                     
                     // Due Date
                     VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
@@ -672,7 +722,7 @@ struct AddTodoTaskView: View {
                             .background(title.isEmpty ? DesignSystem.Colors.textTertiary : DesignSystem.Colors.accent)
                             .cornerRadius(DesignSystem.CornerRadius.md)
                     }
-                    .disabled(title.isEmpty)
+                    .disabled(title.isEmpty || availableTabs.isEmpty)
                     .padding(.bottom, DesignSystem.Spacing.lg)
                 }
                 .padding(DesignSystem.Spacing.lg)
@@ -694,7 +744,7 @@ struct AddTodoTaskView: View {
             }
         }
         .onAppear {
-            selectedTabForTask = selectedTab
+            selectedTabID = selectedTab?.objectID ?? availableTabs.first?.objectID
         }
     }
     
@@ -702,9 +752,21 @@ struct AddTodoTaskView: View {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return }
         
-        let targetTab = selectedTabForTask ?? availableTabs.first
+        guard !availableTabs.isEmpty else {
+            errorMessage = "Create a list before adding tasks."
+            showingError = true
+            return
+        }
         
-        guard let tab = targetTab else {
+        if hasRecurrence && recurrenceType == "weekly" && selectedWeekdays.isEmpty {
+            errorMessage = "Select at least one weekday for a weekly recurrence."
+            showingError = true
+            return
+        }
+        
+        let resolvedTabID = selectedTabID ?? availableTabs.first?.objectID
+        guard let tabID = resolvedTabID,
+              let tab = availableTabs.first(where: { $0.objectID == tabID }) else {
             errorMessage = "No list available to add task to"
             showingError = true
             return

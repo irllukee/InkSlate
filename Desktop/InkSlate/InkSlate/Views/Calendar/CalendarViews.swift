@@ -5,6 +5,7 @@
 
 import SwiftUI
 import EventKit
+import UIKit
 
 // MARK: - Calendar Manager
 class CalendarManager: ObservableObject {
@@ -365,7 +366,8 @@ struct CalendarMainView: View {
             } else {
                 CalendarPermissionView(
                     authorizationStatus: calendarManager.authorizationStatus,
-                    onRequestAccess: { calendarManager.requestAccess() }
+                    onRequestAccess: { calendarManager.requestAccess() },
+                    onOpenSettings: openCalendarSettings
                 )
             }
         }
@@ -400,6 +402,11 @@ struct CalendarMainView: View {
         } else {
             return status == .authorized
         }
+    }
+    
+    private func openCalendarSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url, options: [:], completionHandler: nil)
     }
 }
 
@@ -1052,6 +1059,7 @@ struct CalendarEventViewModel {
 struct CalendarPermissionView: View {
     let authorizationStatus: EKAuthorizationStatus
     let onRequestAccess: () -> Void
+    let onOpenSettings: () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
@@ -1070,9 +1078,18 @@ struct CalendarPermissionView: View {
                 Button("Allow Calendar Access") { onRequestAccess() }
                     .buttonStyle(.borderedProminent)
             } else if isDenied {
-                Text("Enable access in Settings > Privacy & Security > Calendars")
-                    .font(.caption).foregroundColor(.secondary)
-                    .multilineTextAlignment(.center).padding(.horizontal)
+                VStack(spacing: 12) {
+                    Text("Enable access in Settings > Privacy & Security > Calendars")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                    
+                    Button("Open Settings") {
+                        onOpenSettings()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             }
         }
         .padding()
@@ -1195,15 +1212,18 @@ struct MonthPickerView: View {
     }
 
     private var months: [Date] {
-        let currentDate = Date()
-        var out: [Date] = []
-        let year = calendar.component(.year, from: currentDate)
-        for month in 1...12 {
-            if let d = calendar.date(from: DateComponents(year: year, month: month, day: 1)) {
-                out.append(d)
-            }
+        let today = Date()
+        guard
+            let startingYear = calendar.date(byAdding: .year, value: -2, to: today),
+            let anchor = calendar.date(from: calendar.dateComponents([.year, .month], from: startingYear))
+        else {
+            return []
         }
-        return out
+        
+        // Provide 5 years worth of months centered around the current date (60 months total)
+        return (0..<60).compactMap {
+            calendar.date(byAdding: .month, value: $0, to: anchor)
+        }
     }
 
     private func daysInMonth(_ month: Date) -> [Date?] {

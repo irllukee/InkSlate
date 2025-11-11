@@ -23,7 +23,6 @@ extension JournalBook {
         guard let entries = entries?.allObjects as? [JournalEntry],
               !entries.isEmpty else { return 0 }
         
-        // Get all unique dates with entries (normalized to start of day)
         let calendar = Calendar.current
         let entryDates = Set(entries.compactMap { entry -> Date? in
             guard let date = entry.createdDate else { return nil }
@@ -32,31 +31,20 @@ extension JournalBook {
         
         guard !entryDates.isEmpty else { return 0 }
         
-        // Sort dates in descending order
-        let sortedDates = entryDates.sorted(by: >)
-        
-        // Calculate current streak
         var streak = 0
-        let today = calendar.startOfDay(for: Date())
-        var expectedDate = today
+        var cursor = calendar.startOfDay(for: Date())
         
-        // Check if today has an entry, if not check from yesterday
-        if !entryDates.contains(today) {
-            expectedDate = calendar.date(byAdding: .day, value: -1, to: today) ?? today
+        if !entryDates.contains(cursor),
+           let previous = calendar.date(byAdding: .day, value: -1, to: cursor) {
+            cursor = previous
         }
         
-        for date in sortedDates {
-            if calendar.isDate(date, inSameDayAs: expectedDate) || date <= expectedDate {
-                streak += 1
-                if let previousDay = calendar.date(byAdding: .day, value: -1, to: expectedDate) {
-                    expectedDate = previousDay
-                } else {
-                    break
-                }
-            } else {
-                // Gap found, streak is broken
+        while entryDates.contains(cursor) {
+            streak += 1
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: cursor) else {
                 break
             }
+            cursor = previous
         }
         
         return streak
@@ -104,6 +92,26 @@ extension JournalBook {
         // Streaks are calculated dynamically from entries
         // This method is kept for potential future use if we need to cache streak values
         // For now, streaks are calculated on-demand via computed properties
+    }
+}
+
+fileprivate struct JournalPromptMetadata: Codable {
+    let prompt: String
+    let category: String
+    let type: String
+}
+
+fileprivate let promptMetadataEncoder = JSONEncoder()
+fileprivate let promptMetadataDecoder = JSONDecoder()
+
+extension JournalEntry {
+    fileprivate var promptMetadata: JournalPromptMetadata? {
+        guard let tags,
+              let data = tags.data(using: .utf8),
+              let metadata = try? promptMetadataDecoder.decode(JournalPromptMetadata.self, from: data) else {
+            return nil
+        }
+        return metadata
     }
 }
 
@@ -561,6 +569,17 @@ struct EntryRow: View {
                 .font(DesignSystem.Typography.body)
                 .foregroundColor(DesignSystem.Colors.textPrimary)
                 .lineLimit(3)
+            if let metadata = entry.promptMetadata {
+                HStack(spacing: DesignSystem.Spacing.xs) {
+                    Image(systemName: "sparkles")
+                        .font(.caption)
+                        .foregroundColor(DesignSystem.Colors.accent)
+                    Text(metadata.prompt)
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                        .lineLimit(2)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, DesignSystem.Spacing.lg)
@@ -598,12 +617,83 @@ struct NewEntryView: View {
     @State private var text = ""
     @State private var wordCount = 0
     @State private var date = Date()
+    @State private var selectedPrompt = ""
+    @State private var selectedPromptCategory = PromptCategory.reflection.rawValue
+    @State private var selectedPromptType: PromptType = .reflection
+    @State private var showingPromptPicker = false
     
     var accentColor: Color { Color(hex: book.color ?? "#007AFF") ?? DesignSystem.Colors.accent }
     
     var body: some View {
         NavigationStack {
             VStack(spacing: DesignSystem.Spacing.xl) {
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                    HStack {
+                        Text("Prompt")
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                        Spacer()
+                        if !selectedPrompt.isEmpty {
+                            Button("Clear") {
+                                selectedPrompt = ""
+                                selectedPromptCategory = PromptCategory.reflection.rawValue
+                                selectedPromptType = .reflection
+                            }
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundColor(DesignSystem.Colors.accent)
+                        }
+                    }
+                    
+                    if selectedPrompt.isEmpty {
+                        Button {
+                            showingPromptPicker = true
+                            lightHaptic()
+                        } label: {
+                            HStack {
+                                Image(systemName: "sparkles")
+                                Text("Choose Writing Prompt")
+                                    .fontWeight(.medium)
+                            }
+                            .font(DesignSystem.Typography.body)
+                            .foregroundColor(DesignSystem.Colors.textInverse)
+                            .padding(.vertical, DesignSystem.Spacing.md)
+                            .frame(maxWidth: .infinity)
+                            .background(accentColor)
+                            .cornerRadius(DesignSystem.CornerRadius.md)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
+                            Text(selectedPrompt)
+                                .font(DesignSystem.Typography.body)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                                .multilineTextAlignment(.leading)
+                            
+                            HStack(spacing: DesignSystem.Spacing.xs) {
+                                Image(systemName: "tag")
+                                    .font(.caption)
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                                Text(selectedPromptCategory.capitalized)
+                                    .font(DesignSystem.Typography.caption)
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                                Spacer()
+                                Button("Change Prompt") {
+                                    showingPromptPicker = true
+                                    lightHaptic()
+                                }
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundColor(DesignSystem.Colors.accent)
+                            }
+                        }
+                        .padding(DesignSystem.Spacing.md)
+                        .background(DesignSystem.Colors.surface)
+                        .cornerRadius(DesignSystem.CornerRadius.md)
+                    }
+                }
+                .padding(DesignSystem.Spacing.lg)
+                .background(DesignSystem.Colors.backgroundTertiary)
+                .cornerRadius(DesignSystem.CornerRadius.md)
+                
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
                     HStack {
                             Text("Date")
@@ -627,7 +717,7 @@ struct NewEntryView: View {
                 .background(DesignSystem.Colors.backgroundTertiary)
                 .cornerRadius(DesignSystem.CornerRadius.md)
                 
-                    TextEditor(text: $text)
+                TextEditor(text: $text)
                     .font(DesignSystem.Typography.body)
                     .padding()
                     .background(DesignSystem.Colors.surface)
@@ -651,6 +741,19 @@ struct NewEntryView: View {
             }
         }
         .loadingOverlay(loadingManager: loadingManager)
+        .sheet(isPresented: $showingPromptPicker) {
+            PromptPickerView(
+                selectedPrompt: $selectedPrompt,
+                selectedPromptCategory: $selectedPromptCategory,
+                selectedPromptType: $selectedPromptType
+            )
+            .presentationDetents([.fraction(0.5), .large])
+            .presentationDragIndicator(.visible)
+        }
+        .onChange(of: selectedPrompt) { _, newValue in
+            guard !newValue.isEmpty, text.isEmpty else { return }
+            text = newValue + "\n\n"
+        }
     }
     
     private func saveEntry() {
@@ -662,6 +765,17 @@ struct NewEntryView: View {
             entry.modifiedDate = Date()
             entry.id = UUID()
             entry.book = book
+            if !selectedPrompt.isEmpty {
+                let metadata = JournalPromptMetadata(
+                    prompt: selectedPrompt,
+                    category: selectedPromptCategory,
+                    type: selectedPromptType.rawValue
+                )
+                if let data = try? promptMetadataEncoder.encode(metadata),
+                   let json = String(data: data, encoding: .utf8) {
+                    entry.tags = json
+                }
+            }
             viewContext.insert(entry)
             withAnimation { try? viewContext.save() }
                 loadingManager.stopLoading()

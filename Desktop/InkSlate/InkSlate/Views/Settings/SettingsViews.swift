@@ -7,6 +7,7 @@
 
 import SwiftUI
 import CoreData
+import Security
 
 // MARK: - Settings Feature Views
 struct SettingsView: View {
@@ -304,9 +305,17 @@ struct SettingsView: View {
             }
             defaults.synchronize()
             
+            // Clear iCloud key-value storage to prevent settings from syncing back
+            clearICloudKeyValueStore()
+            
             // Clear Keychain data (encrypted notes passwords)
             clearKeychainData()
             
+            // Clear any locally stored files (profile images, recipe images, exports, etc.)
+            clearLocalFileStorage()
+            
+            // Reset profile data and any observable shared state
+            ProfileService().resetToDefaults()
             // Reset shared state
             shared.resetToDefaults()
             
@@ -314,6 +323,16 @@ struct SettingsView: View {
             // Handle error silently - user doesn't need to see technical errors
             print("Factory reset error: \(error)")
         }
+    }
+    
+    private func clearICloudKeyValueStore() {
+        let cloudStore = NSUbiquitousKeyValueStore.default
+        let cloudKeys = cloudStore.dictionaryRepresentation.keys
+        
+        for key in cloudKeys {
+            cloudStore.removeObject(forKey: key)
+        }
+        cloudStore.synchronize()
     }
     
     private func clearKeychainData() {
@@ -330,6 +349,23 @@ struct SettingsView: View {
             print("Keychain clear error: \(status)")
         }
     }
+    
+    private func clearLocalFileStorage() {
+        let fileManager = FileManager.default
+        guard let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return
+        }
+        
+        if let fileURLs = try? fileManager.contentsOfDirectory(at: documentsURL, includingPropertiesForKeys: nil, options: []) {
+            for fileURL in fileURLs {
+                do {
+                    try fileManager.removeItem(at: fileURL)
+                } catch {
+                    print("Failed to remove \(fileURL.lastPathComponent): \(error)")
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Menu Reorder View
@@ -337,6 +373,11 @@ struct MenuReorderView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var menuItems: [MenuViewType] = MenuViewType.allCases
     @State private var hiddenItems: Set<MenuViewType> = []
+    
+    private let userDefaults = UserDefaults.standard
+    private let cloudStore = NSUbiquitousKeyValueStore.default
+    private let menuOrderKey = "MenuOrder"
+    private let hiddenMenuItemsKey = "HiddenMenuItems"
     
     var body: some View {
         NavigationView {
@@ -403,6 +444,18 @@ struct MenuReorderView: View {
         }
         .onAppear {
             loadMenuConfiguration()
+            setupCloudStoreObserver()
+        }
+    }
+    
+    private func setupCloudStoreObserver() {
+        // Listen for iCloud sync changes
+        NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: cloudStore,
+            queue: .main
+        ) { [self] _ in
+            loadMenuConfiguration()
         }
     }
     
@@ -436,8 +489,20 @@ struct MenuReorderView: View {
     }
     
     private func loadMenuConfiguration() {
-        // Load saved menu order
-        if let savedOrder = UserDefaults.standard.array(forKey: "MenuOrder") as? [String] {
+        // Try to load from iCloud first, fallback to local UserDefaults for migration
+        let menuOrder: [String]?
+        if let cloudOrder = cloudStore.array(forKey: menuOrderKey) as? [String], !cloudOrder.isEmpty {
+            menuOrder = cloudOrder
+        } else if let localOrder = userDefaults.array(forKey: menuOrderKey) as? [String], !localOrder.isEmpty {
+            menuOrder = localOrder
+            // Migrate to iCloud
+            cloudStore.set(localOrder, forKey: menuOrderKey)
+            cloudStore.synchronize()
+        } else {
+            menuOrder = nil
+        }
+        
+        if let savedOrder = menuOrder {
             let orderedItems = savedOrder.compactMap { MenuViewType(rawValue: $0) }
             if !orderedItems.isEmpty {
                 menuItems = orderedItems
@@ -445,17 +510,35 @@ struct MenuReorderView: View {
         }
         
         // Load hidden items
-        if let hiddenItemsData = UserDefaults.standard.array(forKey: "HiddenMenuItems") as? [String] {
-            hiddenItems = Set(hiddenItemsData.compactMap { MenuViewType(rawValue: $0) })
+        let hiddenItemsData: [String]?
+        if let cloudHidden = cloudStore.array(forKey: hiddenMenuItemsKey) as? [String], !cloudHidden.isEmpty {
+            hiddenItemsData = cloudHidden
+        } else if let localHidden = userDefaults.array(forKey: hiddenMenuItemsKey) as? [String], !localHidden.isEmpty {
+            hiddenItemsData = localHidden
+            // Migrate to iCloud
+            cloudStore.set(localHidden, forKey: hiddenMenuItemsKey)
+            cloudStore.synchronize()
+        } else {
+            hiddenItemsData = nil
+        }
+        
+        if let hiddenData = hiddenItemsData {
+            hiddenItems = Set(hiddenData.compactMap { MenuViewType(rawValue: $0) })
         }
     }
     
     private func saveMenuConfiguration() {
-        // Save menu order
-        UserDefaults.standard.set(menuItems.map { $0.rawValue }, forKey: "MenuOrder")
+        let menuOrderArray = menuItems.map { $0.rawValue }
+        let hiddenItemsArray = Array(hiddenItems).map { $0.rawValue }
         
-        // Save hidden items
-        UserDefaults.standard.set(Array(hiddenItems).map { $0.rawValue }, forKey: "HiddenMenuItems")
+        // Save to iCloud Key-Value Store for syncing
+        cloudStore.set(menuOrderArray, forKey: menuOrderKey)
+        cloudStore.set(hiddenItemsArray, forKey: hiddenMenuItemsKey)
+        cloudStore.synchronize()
+        
+        // Also save locally as backup
+        userDefaults.set(menuOrderArray, forKey: menuOrderKey)
+        userDefaults.set(hiddenItemsArray, forKey: hiddenMenuItemsKey)
     }
 }
 

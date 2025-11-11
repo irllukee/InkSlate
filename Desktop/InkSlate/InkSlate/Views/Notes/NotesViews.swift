@@ -24,12 +24,25 @@ struct NotesListView: View {
         predicate: NSPredicate(format: "isMarkedDeleted == YES")
     ) private var deletedNotes: FetchedResults<Notes>
 
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \FSProject.name, ascending: true)]
+    ) private var projects: FetchedResults<FSProject>
+
     @State private var searchText: String = ""
     @State private var debouncedSearchText = ""
     @State private var searchTimer: Timer?
 
     @State private var showingNewNoteSheet = false
     @State private var selectedNote: Notes?
+    @State private var selectedProject: FSProject?
+    @State private var showingProjectSidebar = NavigationSplitViewVisibility.detailOnly
+    @State private var showingFoldersSheet = false
+    @State private var showingNewProjectSheet = false
+    @State private var showingProjectSettings = false
+    @State private var showingTagManager = false
+    @State private var noteToMove: Notes?
+    
+    @AppStorage("lastSelectedFolderID") private var lastSelectedFolderID: String?
 
     @State private var sortBy: SortBy = .modificationDate
     @State private var sortDirection: SortDirection = .descending
@@ -41,9 +54,48 @@ struct NotesListView: View {
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var isLoading = false
+    
+    private var defaultProject: FSProject? {
+        projects.first { $0.isDefault } ?? projects.first
+    }
+    
+    private func loadLastSelectedFolder() {
+        // Start with "All Notes" (nil) if no saved preference
+        guard let folderIDString = lastSelectedFolderID,
+              let folderID = UUID(uuidString: folderIDString) else {
+            selectedProject = nil
+            return
+        }
+        
+        // Try to find the saved folder
+        if let savedFolder = projects.first(where: { $0.id == folderID }) {
+            selectedProject = savedFolder
+        } else {
+            // Folder was deleted, reset to "All Notes"
+            selectedProject = nil
+            lastSelectedFolderID = nil
+        }
+    }
+    
+    private func saveLastSelectedFolder(_ folder: FSProject?) {
+        if let folder = folder {
+            lastSelectedFolderID = folder.id?.uuidString
+        } else {
+            lastSelectedFolderID = nil
+        }
+    }
 
     private var filteredNotes: [Notes] {
         var notes = Array(showingDeletedNotes ? deletedNotes : normalNotes)
+        
+        // Filter by selected folder
+        if let selectedProject = selectedProject, !showingDeletedNotes {
+            // Show only notes in the selected folder
+            notes = notes.filter { $0.project == selectedProject }
+        } else if selectedProject == nil && !showingDeletedNotes {
+            // "All Notes" - show all notes regardless of folder
+            // Don't filter, show everything
+        }
 
         if !debouncedSearchText.isEmpty {
             let q = debouncedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -88,20 +140,46 @@ struct NotesListView: View {
                     notesListView
                 }
             }
-            .navigationTitle(showingDeletedNotes ? "Recently Deleted" : "Notes")
+            .navigationTitle(showingDeletedNotes ? "Recently Deleted" : (selectedProject?.name ?? "All Notes"))
             .overlay { if isLoading { loadingOverlay } }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
+                    if !showingDeletedNotes {
+                        Button {
+                            showingFoldersSheet = true
+                        } label: {
+                            Image(systemName: "folder")
+                        }
+                        .accessibilityLabel("Folders")
+                    } else {
                     Button {
                         withAnimation(.easeInOut) { showingDeletedNotes.toggle() }
                     } label: {
-                        Image(systemName: showingDeletedNotes ? "arrow.left" : "trash")
+                            Image(systemName: "arrow.left")
                     }
-                    .accessibilityLabel(showingDeletedNotes ? "Back to Notes" : "Recently Deleted")
+                        .accessibilityLabel("Back to Notes")
+                    }
                 }
 
                 ToolbarItem(placement: .navigationBarTrailing) {
+                        HStack(spacing: 12) {
                     if !showingDeletedNotes {
+                                Button {
+                                    showingTagManager = true
+                                } label: {
+                                    Image(systemName: "tag")
+                                }
+                                .accessibilityLabel("Tags")
+                                
+                                if selectedProject != nil {
+                                    Button {
+                                        showingProjectSettings = true
+                                    } label: {
+                                        Image(systemName: "gearshape")
+                                    }
+                                    .accessibilityLabel("Folder Settings")
+                                }
+                                
                         Button {
                             showingNewNoteSheet = true
                         } label: { Image(systemName: "square.and.pencil") }
@@ -109,7 +187,29 @@ struct NotesListView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showingNewNoteSheet) { NewNoteView() }
+                }
+                .sheet(isPresented: $showingFoldersSheet) {
+                    FoldersListView(selectedProject: $selectedProject, showingNewProjectSheet: $showingNewProjectSheet)
+                }
+                .sheet(isPresented: $showingNewNoteSheet) { 
+                    NewNoteView(selectedProject: selectedProject)
+                }
+                .sheet(isPresented: $showingNewProjectSheet) {
+                    NewProjectView()
+                }
+                .sheet(isPresented: $showingProjectSettings) {
+                    if let project = selectedProject {
+                        ProjectSettingsView(project: project)
+                    }
+                }
+                .sheet(isPresented: $showingTagManager) {
+                    TagManagerView()
+                }
+                .sheet(item: $noteToMove) { note in
+                    MoveToFolderView(note: note) {
+                        noteToMove = nil
+                    }
+                }
             .sheet(item: $selectedNote) { note in
                 if note.isDeleted {
                     Text("This note is in Recently Deleted.")
@@ -129,16 +229,223 @@ struct NotesListView: View {
                 }
             }
             .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
-            .onAppear { purgeOldDeletedNotes() }
+                .onAppear { 
+                    purgeOldDeletedNotes()
+                    loadLastSelectedFolder()
+                }
+                .onChange(of: selectedProject) { _, newValue in
+                    saveLastSelectedFolder(newValue)
+                }
             .onChange(of: searchText) { _, newValue in
                 searchTimer?.invalidate()
                 searchTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
                     debouncedSearchText = newValue
+                    }
                 }
             }
         }
     }
 
+// MARK: - Folders List View (Sheet)
+struct FoldersListView: View {
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+    
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Notes.modifiedDate, ascending: false)],
+        predicate: NSPredicate(format: "isMarkedDeleted == NO")
+    ) private var normalNotes: FetchedResults<Notes>
+    
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \FSProject.name, ascending: true)]
+    ) private var projects: FetchedResults<FSProject>
+    
+    @Binding var selectedProject: FSProject?
+    @Binding var showingNewProjectSheet: Bool
+    
+    @AppStorage("lastSelectedFolderID") private var lastSelectedFolderID: String?
+    
+    @State private var projectToDelete: FSProject?
+    @State private var showingDeleteAlert = false
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                // All Notes Folder - Always visible
+                Button {
+                    withAnimation {
+                        selectedProject = nil
+                    }
+                    saveFolderSelection(nil)
+                    dismiss()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.blue)
+                            .frame(width: 24)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("All Notes")
+                                .font(.headline)
+                                .foregroundColor(.primary)
+                            Text("\(normalNotes.count) notes")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        if selectedProject == nil {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.blue)
+                                .font(.system(size: 18))
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(selectedProject == nil ? Color.blue.opacity(0.1) : Color.clear)
+                
+                // User Created Folders
+                if !projects.isEmpty {
+                    Section {
+                        ForEach(projects) { project in
+                            Button {
+                                withAnimation {
+                                    selectedProject = project
+                                }
+                                saveFolderSelection(project)
+                                dismiss()
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "folder.fill")
+                                        .font(.system(size: 20))
+                                        .foregroundColor(.blue)
+                                        .frame(width: 24)
+                                    
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(project.name ?? "Unnamed Folder")
+                                            .font(.headline)
+                                            .foregroundColor(.primary)
+                                        if let notes = project.notes as? Set<Notes> {
+                                            let count = notes.filter { !$0.isMarkedDeleted }.count
+                                            Text("\(count) notes")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    if selectedProject?.id == project.id {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.blue)
+                                            .font(.system(size: 18))
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(selectedProject?.id == project.id ? Color.blue.opacity(0.1) : Color.clear)
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    projectToDelete = project
+                                    showingDeleteAlert = true
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Folders")
+                    }
+                }
+                
+                // New Folder Button
+                Section {
+                    Button {
+                        showingNewProjectSheet = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(.blue)
+                                .frame(width: 24)
+                            Text("New Folder")
+                                .font(.headline)
+                                .foregroundColor(.blue)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .navigationTitle("Folders")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showingNewProjectSheet = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+            .alert("Delete Folder", isPresented: $showingDeleteAlert) {
+                Button("Cancel", role: .cancel) { projectToDelete = nil }
+                Button("Delete", role: .destructive) {
+                    if let project = projectToDelete {
+                        deleteProject(project)
+                        projectToDelete = nil
+                    }
+                }
+            } message: {
+                Text("Are you sure you want to delete this folder? All notes in this folder will be moved to 'All Notes'.")
+            }
+            .sheet(isPresented: $showingNewProjectSheet) {
+                NewProjectView()
+            }
+        }
+    }
+    
+    private func deleteProject(_ project: FSProject) {
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        
+        if selectedProject?.id == project.id {
+            selectedProject = nil
+        }
+        
+        // Move notes to "All Notes" (remove folder assignment)
+        if let notes = project.notes as? Set<Notes> {
+            for note in notes {
+                note.project = nil
+            }
+        }
+        
+        viewContext.delete(project)
+        
+        do {
+            try viewContext.save()
+        } catch {
+            print("Failed to delete folder: \(error.localizedDescription)")
+        }
+    }
+    
+    private func saveFolderSelection(_ folder: FSProject?) {
+        if let folder = folder {
+            lastSelectedFolderID = folder.id?.uuidString
+        } else {
+            lastSelectedFolderID = nil
+        }
+    }
+}
+
+extension NotesListView {
     private var toolbarView: some View {
         VStack(spacing: 8) {
             HStack(spacing: 12) {
@@ -232,11 +539,12 @@ struct NotesListView: View {
                             Label("Delete", systemImage: "trash")
                         }
                     } else {
-                        Button(role: .destructive) {
-                            softDelete(note)
+                        Button {
+                            noteToMove = note
                         } label: {
-                            Label("Delete", systemImage: "trash")
+                            Label("Move", systemImage: "folder")
                         }
+                        .tint(.orange)
 
                         Button {
                             togglePin(note)
@@ -245,6 +553,12 @@ struct NotesListView: View {
                                   systemImage: note.isPinned ? "pin.slash" : "pin")
                         }
                         .tint(.blue)
+
+                        Button(role: .destructive) {
+                            softDelete(note)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                     }
                 }
             }
@@ -374,6 +688,20 @@ struct NotesListView: View {
             showingError = true
         }
     }
+    
+    private func deleteProject(_ project: FSProject) {
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        
+        if selectedProject?.id == project.id {
+            withAnimation {
+                selectedProject = nil
+            }
+        }
+        
+        viewContext.delete(project)
+        saveOrAlert("Failed to delete folder")
+    }
 }
 
 // MARK: - Note Row View
@@ -402,6 +730,17 @@ struct NoteRowView: View {
                         Image(systemName: "lock.fill")
                             .foregroundColor(.orange)
                             .font(.caption)
+                    }
+                }
+                
+                if let project = note.project {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder.fill")
+                            .font(.caption2)
+                            .foregroundColor(.blue)
+                        Text(project.name ?? "Folder")
+                            .font(.caption2)
+                            .foregroundColor(.blue)
                     }
                 }
 
@@ -558,6 +897,9 @@ struct TextEditorView: View {
                 DecryptionView(note: note) { success in if success { saveNote() } }
             }
             .sheet(isPresented: $showingExportOptions) { ExportOptionsView(note: note) }
+            .fullScreenCover(isPresented: $showingMarkdownPreview) {
+                NotePreviewScreen(note: note, isPresented: $showingMarkdownPreview)
+            }
             .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
             .onAppear { startAutoSave() }
             .onDisappear { stopAutoSave() }
@@ -574,9 +916,37 @@ struct TextEditorView: View {
                 .font(.title3)
                 .textFieldStyle(.plain)
                 .onChange(of: note.title) { _, _ in markAsChanged() }
+            
+            HStack {
+                Text("Folder").font(.caption).foregroundColor(.secondary)
+                Spacer()
+                ProjectPickerView(selectedProject: Binding(
+                    get: { note.project },
+                    set: { note.project = $0; markAsChanged() }
+                ))
+            }
         }
         .padding()
         .background(Color(.systemGray6))
+    }
+    
+    private struct ProjectPickerView: View {
+        @Environment(\.managedObjectContext) private var viewContext
+        @FetchRequest(
+            sortDescriptors: [NSSortDescriptor(keyPath: \FSProject.name, ascending: true)]
+        ) private var projects: FetchedResults<FSProject>
+        
+        @Binding var selectedProject: FSProject?
+        
+        var body: some View {
+            Picker("Folder", selection: $selectedProject) {
+                Text("None").tag(FSProject?.none)
+                ForEach(projects) { project in
+                    Text(project.name ?? "Unnamed Folder").tag(FSProject?.some(project))
+                }
+            }
+            .pickerStyle(.menu)
+        }
     }
 
     private var contentSection: some View {
@@ -584,26 +954,18 @@ struct TextEditorView: View {
             HStack {
                 Text("Content").font(.caption).foregroundColor(.secondary)
                 Spacer()
-                Button(showingMarkdownPreview ? "Edit" : "Preview") { showingMarkdownPreview.toggle() }
+                Button("Preview") { showingMarkdownPreview = true }
                     .font(.caption).foregroundColor(.blue)
             }
             .padding(.horizontal).padding(.top, 8)
 
-            if showingMarkdownPreview {
-                ScrollView {
-                    Text(note.content ?? "")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                }
-            } else {
-                MarkdownEditor(text: Binding(
-                    get: { note.content ?? "" },
-                    set: { note.content = $0 }
-                ), selectedRange: $selectedRange, coordinatorRef: $coordinatorRef)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(.systemBackground))
-                    .onChange(of: note.content) { _, _ in markAsChanged() }
-            }
+            MarkdownEditor(text: Binding(
+                get: { note.content ?? "" },
+                set: { note.content = $0 }
+            ), selectedRange: $selectedRange, coordinatorRef: $coordinatorRef)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(.systemBackground))
+                .onChange(of: note.content) { _, _ in markAsChanged() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -614,8 +976,8 @@ struct TextEditorView: View {
         
         // Create preview without image markers
         if let content = note.content {
-            let cleaned = content.replacingOccurrences(of: "\\[IMG:[A-Za-z0-9+/=]+\\]", with: "[Image]", options: .regularExpression)
-            note.preview = String(cleaned.prefix(100))
+            let plain = MarkdownSerialization.plainText(from: content)
+            note.preview = String(plain.prefix(100))
         }
         
         scheduleAutoSave()
@@ -666,13 +1028,78 @@ struct TextEditorView: View {
     }
 }
 
+struct NotePreviewScreen: View {
+    @ObservedObject var note: Notes
+    @Binding var isPresented: Bool
+    
+    var body: some View {
+        NavigationStack {
+            MarkdownPreviewContainer(content: note.content ?? "")
+                .navigationTitle((note.title?.isEmpty ?? true) ? "Preview" : (note.title ?? "Preview"))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") { isPresented = false }
+                    }
+                }
+        }
+    }
+}
+
+private struct MarkdownPreviewContainer: View {
+    let content: String
+    
+    var body: some View {
+        ScrollView {
+            MarkdownPreviewTextView(content: content)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 24)
+        }
+        .background(Color(.systemBackground))
+    }
+}
+
+private struct MarkdownPreviewTextView: UIViewRepresentable {
+    let content: String
+    
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.backgroundColor = .clear
+        textView.isEditable = false
+        textView.isSelectable = false
+        textView.isScrollEnabled = false
+        textView.adjustsFontForContentSizeCategory = true
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textView
+    }
+    
+    func updateUIView(_ uiView: UITextView, context: Context) {
+        let width = max(uiView.bounds.width - 28, UIScreen.main.bounds.width - 48)
+        if let (attributed, _) = MarkdownSerialization.deserialize(content, maxWidth: width) {
+            uiView.attributedText = attributed
+        } else {
+            uiView.attributedText = EditorContentParser.deserialize(content, maxWidth: width)
+        }
+    }
+}
+
 // MARK: - New Note View
 struct NewNoteView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
+    
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \FSProject.name, ascending: true)]
+    ) private var projects: FetchedResults<FSProject>
+    
+    let selectedProject: FSProject?
 
     @State private var title: String = ""
     @State private var content: String = ""
+    @State private var project: FSProject?
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var isSaving = false
@@ -692,6 +1119,19 @@ struct NewNoteView: View {
                 }
                 .padding()
                 .background(Color(.systemGray6))
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Folder").font(.caption).foregroundColor(.secondary)
+                    Picker("Folder", selection: $project) {
+                        Text("None").tag(FSProject?.none)
+                        ForEach(projects) { proj in
+                            Text(proj.name ?? "Unnamed Folder").tag(FSProject?.some(proj))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Content").font(.caption).foregroundColor(.secondary)
@@ -715,6 +1155,9 @@ struct NewNoteView: View {
                 }
             }
             .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
+            .onAppear {
+                project = selectedProject
+            }
         }
     }
 
@@ -726,14 +1169,15 @@ struct NewNoteView: View {
         let newNote = Notes(context: viewContext)
         newNote.title = title.isEmpty ? "Untitled" : title
         newNote.content = content
+        newNote.project = project ?? selectedProject
         newNote.isMarkedDeleted = false
         newNote.createdDate = Date()
         newNote.modifiedDate = Date()
         newNote.id = UUID()
         
         // Create preview without image markers
-        let cleaned = content.replacingOccurrences(of: "\\[IMG:[A-Za-z0-9+/=]+\\]", with: "[Image]", options: .regularExpression)
-        newNote.preview = String(cleaned.prefix(100))
+        let plain = MarkdownSerialization.plainText(from: content)
+        newNote.preview = String(plain.prefix(100))
 
         viewContext.insert(newNote)
 
@@ -744,6 +1188,583 @@ struct NewNoteView: View {
             errorMessage = "Failed to save note: \(error.localizedDescription)"
             showingError = true
             isSaving = false
+        }
+    }
+}
+
+// MARK: - New Folder View
+struct NewProjectView: View {
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+    
+    @State private var name: String = ""
+    @State private var isDefault: Bool = false
+    @State private var showingError = false
+    @State private var errorMessage = ""
+    @State private var isSaving = false
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Folder name", text: $name)
+                        .textInputAutocapitalization(.words)
+                } header: {
+                    Text("Folder Details")
+                }
+                
+                Section {
+                    Toggle("Set as default folder", isOn: $isDefault)
+                } footer: {
+                    Text("Default folder will be selected automatically when viewing notes.")
+                }
+            }
+            .navigationTitle("New Folder")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") { saveProject() }
+                        .disabled(isSaving || name.isEmpty)
+                }
+            }
+            .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
+        }
+    }
+    
+    private func saveProject() {
+        guard !isSaving else { return }
+        guard !name.isEmpty else { return }
+        
+        isSaving = true
+        
+        // If setting as default, unset other defaults
+        if isDefault {
+            let fetchRequest = NSFetchRequest<FSProject>(entityName: "FSProject")
+            if let existingProjects = try? viewContext.fetch(fetchRequest) {
+                for project in existingProjects {
+                    project.isDefault = false
+                }
+            }
+        }
+        
+        let newProject = FSProject(context: viewContext)
+        newProject.name = name
+        newProject.isDefault = isDefault
+        newProject.id = UUID()
+        newProject.createdDate = Date()
+        newProject.modifiedDate = Date()
+        
+        // Create default settings
+        let settings = ProjectSettings(context: viewContext)
+        settings.id = UUID()
+        settings.project = newProject
+        settings.filterBy = "all"
+        settings.groupBy = "none"
+        settings.searchScope = "titleAndContent"
+        settings.sortBy = "modifiedDate"
+        settings.sortOrder = "descending"
+        settings.showCreatedDate = true
+        settings.showModifiedDate = true
+        settings.showPreview = true
+        settings.showTags = true
+        
+        viewContext.insert(newProject)
+        viewContext.insert(settings)
+        
+        do {
+            try viewContext.save()
+            dismiss()
+        } catch {
+            errorMessage = "Failed to create folder: \(error.localizedDescription)"
+            showingError = true
+            isSaving = false
+        }
+    }
+}
+
+// MARK: - Folder Settings View
+struct ProjectSettingsView: View {
+    @ObservedObject var project: FSProject
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+    
+    @State private var settings: ProjectSettings?
+    @State private var filterBy: String = "all"
+    @State private var groupBy: String = "none"
+    @State private var searchScope: String = "titleAndContent"
+    @State private var sortBy: String = "modifiedDate"
+    @State private var sortOrder: String = "descending"
+    @State private var showCreatedDate: Bool = true
+    @State private var showModifiedDate: Bool = true
+    @State private var showPreview: Bool = true
+    @State private var showTags: Bool = true
+    @State private var showingError = false
+    @State private var errorMessage = ""
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Display Options") {
+                    Toggle("Show Created Date", isOn: $showCreatedDate)
+                    Toggle("Show Modified Date", isOn: $showModifiedDate)
+                    Toggle("Show Preview", isOn: $showPreview)
+                    Toggle("Show Tags", isOn: $showTags)
+                }
+                
+                Section("Sorting") {
+                    Picker("Sort By", selection: $sortBy) {
+                        Text("Modified Date").tag("modifiedDate")
+                        Text("Created Date").tag("createdDate")
+                        Text("Title").tag("title")
+                        Text("Pin Status").tag("pin")
+                    }
+                    
+                    Picker("Sort Order", selection: $sortOrder) {
+                        Text("Ascending").tag("ascending")
+                        Text("Descending").tag("descending")
+                    }
+                }
+                
+                Section("Search") {
+                    Picker("Search Scope", selection: $searchScope) {
+                        Text("Title & Content").tag("titleAndContent")
+                        Text("Title Only").tag("title")
+                        Text("Content Only").tag("content")
+                    }
+                }
+                
+                Section("Filtering") {
+                    Picker("Filter By", selection: $filterBy) {
+                        Text("All").tag("all")
+                        Text("Pinned").tag("pinned")
+                        Text("Unpinned").tag("unpinned")
+                    }
+                    
+                    Picker("Group By", selection: $groupBy) {
+                        Text("None").tag("none")
+                        Text("Date").tag("date")
+                        Text("Tag").tag("tag")
+                    }
+                }
+            }
+            .navigationTitle("Folder Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { saveSettings() }
+                }
+            }
+            .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
+            .onAppear {
+                loadSettings()
+            }
+        }
+    }
+    
+    private func loadSettings() {
+        if let existingSettings = project.settings {
+            settings = existingSettings
+            filterBy = existingSettings.filterBy ?? "all"
+            groupBy = existingSettings.groupBy ?? "none"
+            searchScope = existingSettings.searchScope ?? "titleAndContent"
+            sortBy = existingSettings.sortBy ?? "modifiedDate"
+            sortOrder = existingSettings.sortOrder ?? "descending"
+            showCreatedDate = existingSettings.showCreatedDate
+            showModifiedDate = existingSettings.showModifiedDate
+            showPreview = existingSettings.showPreview
+            showTags = existingSettings.showTags
+        } else {
+            // Create new settings
+            let newSettings = ProjectSettings(context: viewContext)
+            newSettings.id = UUID()
+            newSettings.project = project
+            settings = newSettings
+        }
+    }
+    
+    private func saveSettings() {
+        guard let settings = settings else { return }
+        
+        settings.filterBy = filterBy
+        settings.groupBy = groupBy
+        settings.searchScope = searchScope
+        settings.sortBy = sortBy
+        settings.sortOrder = sortOrder
+        settings.showCreatedDate = showCreatedDate
+        settings.showModifiedDate = showModifiedDate
+        settings.showPreview = showPreview
+        settings.showTags = showTags
+        
+        do {
+            try viewContext.save()
+            dismiss()
+        } catch {
+            errorMessage = "Failed to save settings: \(error.localizedDescription)"
+            showingError = true
+        }
+    }
+}
+
+// MARK: - Tag Manager View
+struct TagManagerView: View {
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+    
+    @FetchRequest(
+        sortDescriptors: [
+            NSSortDescriptor(keyPath: \FSTag.isSystem, ascending: false),
+            NSSortDescriptor(keyPath: \FSTag.name, ascending: true)
+        ]
+    ) private var tags: FetchedResults<FSTag>
+    
+    @State private var showingNewTag = false
+    @State private var selectedTag: FSTag?
+    @State private var showingEditTag = false
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                if tags.isEmpty {
+                    Section {
+                        VStack(spacing: 12) {
+                            Image(systemName: "tag")
+                                .font(.system(size: 48))
+                                .foregroundColor(.gray)
+                            Text("No tags yet")
+                                .font(.headline)
+                                .foregroundColor(.gray)
+                            Text("Create tags to organize your notes")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 40)
+                    }
+                } else {
+                    let systemTags = tags.filter { $0.isSystem }
+                    let customTags = tags.filter { !$0.isSystem }
+                    
+                    if !systemTags.isEmpty {
+                        Section("System Tags") {
+                            ForEach(systemTags) { tag in
+                                TagRowView(tag: tag)
+                            }
+                        }
+                    }
+                    
+                    if !customTags.isEmpty {
+                        Section("Custom Tags") {
+                            ForEach(customTags) { tag in
+                                TagRowView(tag: tag)
+                                    .swipeActions(edge: .trailing) {
+                                        Button(role: .destructive) {
+                                            deleteTag(tag)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Tags")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showingNewTag = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingNewTag) {
+                NewTagView()
+            }
+        }
+    }
+    
+    private func deleteTag(_ tag: FSTag) {
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        
+        viewContext.delete(tag)
+        
+        do {
+            try viewContext.save()
+        } catch {
+            print("Failed to delete tag: \(error.localizedDescription)")
+        }
+    }
+}
+
+// MARK: - Tag Row View
+struct TagRowView: View {
+    @ObservedObject var tag: FSTag
+    
+    var body: some View {
+        HStack {
+            Circle()
+                .fill(Color(hex: tag.color ?? "#007AFF") ?? .blue)
+                .frame(width: 12, height: 12)
+            
+            Text(tag.name ?? "Unnamed Tag")
+                .font(.body)
+            
+            if tag.isSystem {
+                Spacer()
+                Text("System")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color(.systemGray5))
+                    .cornerRadius(4)
+            }
+        }
+    }
+}
+
+// MARK: - New Tag View
+struct NewTagView: View {
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+    
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \FSTag.name, ascending: true)]
+    ) private var allTags: FetchedResults<FSTag>
+    
+    @State private var name: String = ""
+    @State private var color: String = "#007AFF"
+    @State private var parentTag: FSTag?
+    @State private var showingError = false
+    @State private var errorMessage = ""
+    @State private var isSaving = false
+    
+    let colors: [String] = ["#007AFF", "#FF3B30", "#34C759", "#FF9500", "#5856D6", "#FF2D55", "#5AC8FA", "#AF52DE"]
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Tag name", text: $name)
+                } header: {
+                    Text("Tag Details")
+                }
+                
+                Section("Color") {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 12) {
+                        ForEach(colors, id: \.self) { colorHex in
+                            Button {
+                                color = colorHex
+                            } label: {
+                                Circle()
+                                    .fill(Color(hex: colorHex) ?? .blue)
+                                    .frame(width: 40, height: 40)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(color == colorHex ? Color.primary : Color.clear, lineWidth: 3)
+                                    )
+                            }
+                        }
+                    }
+                }
+                
+                Section {
+                    Picker("Parent Tag", selection: $parentTag) {
+                        Text("None").tag(FSTag?.none)
+                        ForEach(allTags) { tag in
+                            Text(tag.name ?? "Unnamed").tag(FSTag?.some(tag))
+                        }
+                    }
+                } header: {
+                    Text("Parent Tag")
+                } footer: {
+                    Text("Select a parent tag to create a hierarchical tag structure.")
+                }
+            }
+            .navigationTitle("New Tag")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { saveTag() }
+                        .disabled(isSaving || name.isEmpty)
+                }
+            }
+            .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
+        }
+    }
+    
+    private func saveTag() {
+        guard !isSaving else { return }
+        guard !name.isEmpty else { return }
+        
+        isSaving = true
+        
+        let newTag = FSTag(context: viewContext)
+        newTag.name = name
+        newTag.color = color
+        newTag.parentTag = parentTag
+        newTag.isSystem = false
+        newTag.id = UUID()
+        newTag.createdDate = Date()
+        newTag.modifiedDate = Date()
+        
+        viewContext.insert(newTag)
+        
+        do {
+            try viewContext.save()
+            dismiss()
+        } catch {
+            errorMessage = "Failed to save tag: \(error.localizedDescription)"
+            showingError = true
+            isSaving = false
+        }
+    }
+}
+
+// MARK: - Move to Folder View
+struct MoveToFolderView: View {
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+    
+    @ObservedObject var note: Notes
+    let onDismiss: () -> Void
+    
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \FSProject.name, ascending: true)]
+    ) private var projects: FetchedResults<FSProject>
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                // Move to "All Notes" (no folder)
+                Section {
+                    Button {
+                        moveNoteToFolder(nil)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "folder.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(.blue)
+                                .frame(width: 24)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("All Notes")
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Text("Remove from folder")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            if note.project == nil {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.blue)
+                                    .font(.system(size: 18))
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                
+                // User Created Folders
+                Section("Folders") {
+                    if projects.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 48))
+                                .foregroundColor(.gray)
+                            Text("No folders yet")
+                                .font(.headline)
+                                .foregroundColor(.gray)
+                            Text("Create a folder to organize your notes")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 40)
+                    } else {
+                        ForEach(projects) { project in
+                            Button {
+                                moveNoteToFolder(project)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "folder.fill")
+                                        .font(.system(size: 20))
+                                        .foregroundColor(.blue)
+                                        .frame(width: 24)
+                                    
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(project.name ?? "Unnamed Folder")
+                                            .font(.headline)
+                                            .foregroundColor(.primary)
+                                        if let notes = project.notes as? Set<Notes> {
+                                            let count = notes.filter { !$0.isMarkedDeleted }.count
+                                            Text("\(count) notes")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    if note.project?.id == project.id {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.blue)
+                                            .font(.system(size: 18))
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Move to Folder")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        onDismiss()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func moveNoteToFolder(_ folder: FSProject?) {
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
+        
+        note.project = folder
+        note.modifiedDate = Date()
+        
+        do {
+            try viewContext.save()
+            onDismiss()
+            dismiss()
+        } catch {
+            print("Failed to move note: \(error.localizedDescription)")
         }
     }
 }

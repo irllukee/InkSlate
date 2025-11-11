@@ -319,6 +319,8 @@ struct WantToWatchMainView: View {
         isSearching = true
         searchTask = Task {
             do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+                try Task.checkCancellation()
                 let results = try await TMDBService.shared.searchMulti(query: trimmed)
                 
                 if !Task.isCancelled {

@@ -2,6 +2,64 @@ import SwiftUI
 import CoreData
 import UIKit
 
+// MARK: - Supporting Types & Helpers
+
+enum PlaceType: String, CaseIterable {
+    case restaurant = "Restaurants"
+    case activity = "Activities"
+    case place = "Places"
+    
+    var lowercaseKey: String { rawValue.lowercased() }
+}
+
+private func inferredPlaceType(for category: PlaceCategory) -> PlaceType {
+    if let marker = category.icon?.lowercased() {
+        if marker.contains("restaurant") || marker.contains("fork") || marker.contains("knife") {
+            return .restaurant
+        }
+        if marker.contains("activity") || marker.contains("figure") || marker.contains("run") || marker.contains("sport") {
+            return .activity
+        }
+        if marker.contains("place") || marker.contains("map") || marker.contains("location") {
+            return .place
+        }
+        if PlaceType.allCases.contains(where: { $0.lowercaseKey == marker }) {
+            return PlaceType.allCases.first(where: { $0.lowercaseKey == marker }) ?? .place
+        }
+    }
+    
+    if let name = category.name?.lowercased() {
+        if name.contains("restaurant") || name.contains("dining") || name.contains("food") || name.contains("cafe") {
+            return .restaurant
+        }
+        if name.contains("activity") || name.contains("park") || name.contains("gym") || name.contains("adventure") || name.contains("event") {
+            return .activity
+        }
+        if name.contains("place") || name.contains("travel") || name.contains("destination") {
+            return .place
+        }
+    }
+    
+    return .place
+}
+
+private func inferredPlaceType(for place: Place) -> PlaceType {
+    if let category = place.category {
+        return inferredPlaceType(for: category)
+    }
+    
+    if let notes = place.notes?.lowercased() {
+        if notes.contains("food") || notes.contains("restaurant") {
+            return .restaurant
+        }
+        if notes.contains("activity") || notes.contains("park") || notes.contains("event") {
+            return .activity
+        }
+    }
+    
+    return .place
+}
+
 // MARK: - Date Formatter
 private let dateFormatter: DateFormatter = {
     let formatter = DateFormatter()
@@ -19,18 +77,10 @@ struct PlacesMainView: View {
     
     @State private var selectedTab: PlaceType = .restaurant
     
-    enum PlaceType: String, CaseIterable {
-        case restaurant = "Restaurants"
-        case activity = "Activities"
-        case place = "Places"
-    }
-    
-    private var categories: [PlaceCategory] {
-        Array(allCategories).filter { category in
-            // Since PlaceCategory doesn't have a 'type' property, we'll filter by name or use all categories
-            // You may want to add a 'type' attribute to PlaceCategory in the Core Data model
-            return true // For now, show all categories
-        }
+    private func filteredCategories(for type: PlaceType) -> [PlaceCategory] {
+        let categories = Array(allCategories)
+        let filtered = categories.filter { inferredPlaceType(for: $0) == type }
+        return filtered.isEmpty ? categories : filtered
     }
     
     var body: some View {
@@ -60,8 +110,8 @@ struct PlacesMainView: View {
 
             // Content
             PlacesCategoryView(
-                type: selectedTab.rawValue.lowercased(),
-                categories: categories
+                type: selectedTab,
+                categories: filteredCategories(for: selectedTab)
             )
         }
     }
@@ -69,7 +119,7 @@ struct PlacesMainView: View {
 
 // MARK: - Places Category View
 struct PlacesCategoryView: View {
-    let type: String
+    let type: PlaceType
     let categories: [PlaceCategory]
     @Environment(\.managedObjectContext) private var viewContext
     @FetchRequest(
@@ -119,12 +169,11 @@ struct PlacesCategoryView: View {
         }
     }
     
-    private func iconForType(_ type: String) -> String {
+    private func iconForType(_ type: PlaceType) -> String {
         switch type {
-        case "restaurants": return "fork.knife"
-        case "activities": return "figure.run"
-        case "places": return "mappin.and.ellipse"
-        default: return "folder"
+        case .restaurant: return "fork.knife"
+        case .activity: return "figure.run"
+        case .place: return "mappin.and.ellipse"
         }
     }
     
@@ -137,6 +186,15 @@ struct PlacesCategoryView: View {
             }
             viewContext.delete(category)
         }
+        saveContext()
+    }
+
+    private func saveContext() {
+        do {
+            try viewContext.save()
+        } catch {
+            print("Failed to save category changes: \(error.localizedDescription)")
+        }
     }
 }
 
@@ -145,7 +203,7 @@ struct NewCategoryView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.managedObjectContext) private var viewContext
     
-    let type: String
+    let type: PlaceType
     @State private var categoryName = ""
     
     var body: some View {
@@ -172,7 +230,13 @@ struct NewCategoryView: View {
                         category.id = UUID()
                         category.createdDate = Date()
                         category.modifiedDate = Date()
+                        category.icon = type.lowercaseKey
                         viewContext.insert(category)
+                        do {
+                            try viewContext.save()
+                        } catch {
+                            print("Failed to create category: \(error.localizedDescription)")
+                        }
                         dismiss()
                     }
                     .disabled(categoryName.isEmpty)
@@ -186,7 +250,7 @@ struct NewCategoryView: View {
 // MARK: - Places List View
 struct PlacesListView: View {
     let category: PlaceCategory?
-    let type: String
+    let type: PlaceType
     var wishlistOnly: Bool = false
     var favoritesOnly: Bool = false
     
@@ -238,6 +302,11 @@ struct PlacesListView: View {
             .onDelete { indexSet in
                 for index in indexSet {
                     viewContext.delete(places[index])
+                }
+                do {
+                    try viewContext.save()
+                } catch {
+                    print("Failed to delete place: \(error.localizedDescription)")
                 }
             }
         }
@@ -356,17 +425,6 @@ struct PlaceDetailView: View {
                             if !(place.address?.isEmpty ?? true) {
                                 HStack(spacing: 8) {
                                     Image(systemName: "mappin.circle.fill")
-                                        .foregroundColor(.black)
-                                        .font(.subheadline)
-                                    Text(place.address ?? "")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            
-                            if !(place.address?.isEmpty ?? true) {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "location")
                                         .foregroundColor(.black)
                                         .font(.subheadline)
                                     Text(place.address ?? "")
@@ -532,7 +590,7 @@ struct PlaceDetailView: View {
                 }
             }
             .sheet(isPresented: $showingEditSheet) {
-                PlaceEditorView(category: place.category, place: place, type: "restaurants")
+                PlaceEditorView(category: place.category, place: place, type: inferredPlaceType(for: place))
             }
         }
     }
@@ -612,7 +670,7 @@ struct PlaceEditorView: View {
     
     let category: PlaceCategory?
     let place: Place?
-    let type: String
+    let type: PlaceType
     
     @State private var name = ""
     @State private var location = ""
@@ -638,10 +696,12 @@ struct PlaceEditorView: View {
     @State private var dateVisited = Date()
     
     private var categories: [PlaceCategory] {
-        Array(allCategories) // Show all categories since PlaceCategory doesn't have a 'type' property
+        let categories = Array(allCategories)
+        let filtered = categories.filter { inferredPlaceType(for: $0) == type }
+        return filtered.isEmpty ? categories : filtered
     }
     
-    init(category: PlaceCategory?, place: Place?, type: String) {
+    init(category: PlaceCategory?, place: Place?, type: PlaceType) {
         self.category = category
         self.place = place
         self.type = type
@@ -698,7 +758,7 @@ struct PlaceEditorView: View {
                         Text("$$$$").tag("$$$$")
                     }
                     
-                    if type == "restaurants" {
+                    if type == .restaurant {
                         TextField("Cuisine Type", text: $cuisineType)
                         TextField("Dish Recommendations", text: $dishRecommendations)
                     }
@@ -706,7 +766,7 @@ struct PlaceEditorView: View {
                     TextField("Best Time to Go", text: $bestTimeToGo)
                     TextField("Who to Bring", text: $whoToBring)
                     
-                    if type != "restaurants" {
+                    if type != .restaurant {
                         TextField("Entry Fee", text: $entryFee)
                     }
                 }
@@ -775,7 +835,7 @@ struct PlaceEditorView: View {
                                 .multilineTextAlignment(.trailing)
                         }
                         
-                        if type != "restaurants" {
+                        if type != .restaurant {
                             HStack {
                                 Text("Fun Factor")
                                 Spacer()

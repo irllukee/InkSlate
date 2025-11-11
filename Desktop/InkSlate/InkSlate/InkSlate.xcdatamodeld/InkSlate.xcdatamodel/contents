@@ -37,6 +37,9 @@
         <relationship name="settings" optional="YES" maxCount="1" deletionRule="Cascade" destinationEntity="ProjectSettings" inverseName="project" inverseEntity="ProjectSettings"/>
     </entity>
     <entity name="ProjectSettings" representedClassName="ProjectSettings" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>ProjectSettings</recordName>
+        </cloudKitConfiguration>
         <attribute name="filterBy" optional="YES" attributeType="String" defaultValueString="all"/>
         <attribute name="groupBy" optional="YES" attributeType="String" defaultValueString="none"/>
         <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
@@ -50,6 +53,9 @@
         <relationship name="project" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="FSProject" inverseName="settings" inverseEntity="FSProject"/>
     </entity>
     <entity name="FSTag" representedClassName="FSTag" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>FSTag</recordName>
+        </cloudKitConfiguration>
         <attribute name="color" optional="YES" attributeType="String" defaultValueString="#007AFF"/>
         <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
@@ -119,6 +125,9 @@
         <relationship name="tab" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="TodoTab" inverseName="tasks" inverseEntity="TodoTab"/>
     </entity>
     <entity name="MindMap" representedClassName="MindMap" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>MindMap</recordName>
+        </cloudKitConfiguration>
         <attribute name="color" optional="YES" attributeType="String" defaultValueString="#007AFF"/>
         <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="entityDescription" optional="YES" attributeType="String"/>
@@ -128,6 +137,9 @@
         <relationship name="rootNodes" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="MindMapNode" inverseName="mindMap" inverseEntity="MindMapNode"/>
     </entity>
     <entity name="MindMapNode" representedClassName="MindMapNode" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>MindMapNode</recordName>
+        </cloudKitConfiguration>
         <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
         <attribute name="modifiedDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
@@ -139,6 +151,9 @@
         <relationship name="parent" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="MindMapNode" inverseName="children" inverseEntity="MindMapNode"/>
     </entity>
     <entity name="PlaceCategory" representedClassName="PlaceCategory" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>PlaceCategory</recordName>
+        </cloudKitConfiguration>
         <attribute name="color" optional="YES" attributeType="String" defaultValueString="#007AFF"/>
         <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="icon" optional="YES" attributeType="String" defaultValueString="location"/>
@@ -146,9 +161,13 @@
         <attribute name="modifiedDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="name" optional="YES" attributeType="String"/>
         <attribute name="sortOrder" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="type" optional="YES" attributeType="String"/>
         <relationship name="places" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="Place" inverseName="category" inverseEntity="Place"/>
     </entity>
     <entity name="Place" representedClassName="Place" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>Place</recordName>
+        </cloudKitConfiguration>
         <attribute name="address" optional="YES" attributeType="String"/>
         <attribute name="atmosphereRating" optional="YES" attributeType="Integer 16" defaultValueString="5" usesScalarValueType="YES"/>
         <attribute name="bestTimeToGo" optional="YES" attributeType="String"/>
@@ -183,6 +202,9 @@
         <relationship name="category" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="PlaceCategory" inverseName="places" inverseEntity="PlaceCategory"/>
     </entity>
     <entity name="Quote" representedClassName="Quote" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>Quote</recordName>
+        </cloudKitConfiguration>
         <attribute name="author" optional="YES" attributeType="String"/>
         <attribute name="category" optional="YES" attributeType="String"/>
         <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
@@ -194,6 +216,9 @@
         <attribute name="isFavorite" optional="YES" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
     </entity>
     <entity name="WantToWatchItem" representedClassName="WantToWatchItem" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>WantToWatchItem</recordName>
+        </cloudKitConfiguration>
         <attribute name="backdropPath" optional="YES" attributeType="String"/>
         <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
@@ -282,5 +307,25 @@
         <attribute name="notes" optional="YES" attributeType="String"/>
         <attribute name="unit" optional="YES" attributeType="String"/>
         <relationship name="recipe" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Recipe" inverseName="ingredients" inverseEntity="Recipe"/>
+    </entity>
+    <entity name="ShoppingItemEntity" representedClassName="ShoppingItemEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="amount" optional="YES" attributeType="String"/>
+        <attribute name="category" optional="YES" attributeType="String"/>
+        <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="fromRecipe" optional="YES" attributeType="String"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="isChecked" optional="YES" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="name" optional="YES" attributeType="String"/>
+        <attribute name="unit" optional="YES" attributeType="String"/>
+    </entity>
+    <entity name="PantryItemEntity" representedClassName="PantryItemEntity" syncable="YES" codeGenerationType="class">
+        <attribute name="category" optional="YES" attributeType="String"/>
+        <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="expirationDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="name" optional="YES" attributeType="String"/>
+        <attribute name="notes" optional="YES" attributeType="String"/>
+        <attribute name="quantity" optional="YES" attributeType="String"/>
+        <attribute name="unit" optional="YES" attributeType="String"/>
     </entity>
 </model>

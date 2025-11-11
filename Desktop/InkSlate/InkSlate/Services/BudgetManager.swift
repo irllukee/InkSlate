@@ -16,7 +16,14 @@ class BudgetManager: ObservableObject {
     
     // MARK: - Category Management
     
-    func createCategory(name: String, icon: String, color: String, with context: NSManagedObjectContext) -> BudgetCategory {
+    func createCategory(
+        name: String,
+        icon: String,
+        color: String,
+        initialBudget: Double = 0.0,
+        createDefaultSubcategory: Bool = true,
+        with context: NSManagedObjectContext
+    ) -> BudgetCategory {
         let category = BudgetCategory(context: context)
         category.name = name
         category.icon = icon
@@ -24,18 +31,46 @@ class BudgetManager: ObservableObject {
         category.sortOrder = Int16(getNextSortOrder(for: context))
         category.createdDate = Date()
         category.modifiedDate = Date()
-        
         context.insert(category)
+        
+        if createDefaultSubcategory {
+            _ = createSubcategory(
+                name: "General",
+                category: category,
+                budgetAmount: initialBudget,
+                with: context
+            )
+        }
+        
         saveContext(context)
         return category
     }
     
-    func createSubcategory(name: String, category: BudgetCategory, with context: NSManagedObjectContext) -> BudgetSubcategory {
+    func createSubcategory(
+        name: String,
+        category: BudgetCategory,
+        budgetAmount: Double = 0.0,
+        with context: NSManagedObjectContext
+    ) -> BudgetSubcategory {
+        if let existing = category.subcategories?.first(where: {
+            guard let subcategory = $0 as? BudgetSubcategory else { return false }
+            return subcategory.name == name
+        }) as? BudgetSubcategory {
+            if existing.budgetAmount != budgetAmount {
+                existing.budgetAmount = budgetAmount
+                existing.modifiedDate = Date()
+                saveContext(context)
+            }
+            return existing
+        }
+        
         let subcategory = BudgetSubcategory(context: context)
         subcategory.name = name
         subcategory.category = category
+        subcategory.budgetAmount = budgetAmount
         subcategory.createdDate = Date()
         subcategory.modifiedDate = Date()
+        subcategory.sortOrder = Int16((category.subcategories?.count ?? 0))
         
         context.insert(subcategory)
         saveContext(context)
@@ -134,7 +169,14 @@ class BudgetManager: ObservableObject {
         ]
         
         for (index, (name, icon, color)) in defaultCategories.enumerated() {
-            let category = createCategory(name: name, icon: icon, color: color, with: context)
+            let category = createCategory(
+                name: name,
+                icon: icon,
+                color: color,
+                initialBudget: 0.0,
+                createDefaultSubcategory: false,
+                with: context
+            )
             category.sortOrder = Int16(index)
         }
         

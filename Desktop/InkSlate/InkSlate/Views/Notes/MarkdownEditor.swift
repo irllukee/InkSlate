@@ -32,6 +32,206 @@ struct EditorTheme {
 extension NSAttributedString.Key {
     static let codeBlock = NSAttributedString.Key("codeBlockAttribute")
     static let imageData = NSAttributedString.Key("imageDataAttribute")
+    static let imageSizeMode = NSAttributedString.Key("imageSizeModeAttribute")
+}
+
+enum ImageSizeMode: String {
+    case normal
+    case compact
+}
+
+struct EditorContentParser {
+    static func deserialize(_ text: String, maxWidth: CGFloat) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        var lastIndex = text.startIndex
+        
+        let pattern = "\\[(IMG|IMG-C):([A-Za-z0-9+/=]+)\\]"
+        if let regex = try? NSRegularExpression(pattern: pattern) {
+            let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            
+            for match in matches {
+                if let beforeRange = Range(NSRange(location: text.distance(from: text.startIndex, to: lastIndex),
+                                                   length: match.range.location - text.distance(from: text.startIndex, to: lastIndex)), in: text) {
+                    let beforeText = String(text[beforeRange])
+                    result.append(NSAttributedString(string: beforeText, attributes: [
+                        .font: EditorTheme.baseFont,
+                        .foregroundColor: EditorTheme.textColor
+                    ]))
+                }
+                
+                if match.numberOfRanges > 2,
+                   let tokenRange = Range(match.range(at: 1), in: text),
+                   let base64Range = Range(match.range(at: 2), in: text) {
+                    let token = String(text[tokenRange])
+                    let base64 = String(text[base64Range])
+                    if let data = Data(base64Encoded: base64),
+                       let image = UIImage(data: data) {
+                        let attachment = NSTextAttachment()
+                        let aspect = image.size.height / max(image.size.width, 1)
+                        let isCompact = token == "IMG-C"
+                        let targetWidth = isCompact ? min(maxWidth, 160) : min(image.size.width, maxWidth)
+                        let width = max(24, targetWidth)
+                        let height = width * aspect
+                        attachment.image = image
+                        attachment.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+                        
+                        let node = NSMutableAttributedString(attachment: attachment)
+                        node.addAttributes([
+                            .imageData: base64,
+                            .imageSizeMode: (isCompact ? ImageSizeMode.compact : .normal).rawValue
+                        ], range: NSRange(location: 0, length: node.length))
+                        result.append(node)
+                    }
+                }
+                
+                if let matchRange = Range(match.range, in: text) {
+                    lastIndex = matchRange.upperBound
+                }
+            }
+        }
+        
+        if lastIndex < text.endIndex {
+            let remaining = String(text[lastIndex...])
+            result.append(NSAttributedString(string: remaining, attributes: [
+                .font: EditorTheme.baseFont,
+                .foregroundColor: EditorTheme.textColor
+            ]))
+        }
+        
+        return result
+    }
+}
+
+struct MarkdownSerialization {
+    private static let attrPrefix = "⟪ATTR⟫"
+    private static let attrSuffix = "⟪/ATTR⟫"
+    
+    static func serialize(_ attributed: NSAttributedString) -> String {
+        let mutable = attributed as? NSMutableAttributedString ?? NSMutableAttributedString(attributedString: attributed)
+        ensureImageMetadata(in: mutable)
+        
+        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: mutable, requiringSecureCoding: false) else {
+            return plainTextRepresentation(of: mutable)
+        }
+        
+        let encoded = data.base64EncodedString()
+        let plain = plainTextRepresentation(of: mutable)
+        return attrPrefix + encoded + attrSuffix + plain
+    }
+    
+    static func deserialize(_ text: String, maxWidth: CGFloat) -> (NSAttributedString, String)? {
+        guard let components = components(from: text) else {
+            return nil
+        }
+        
+        let base64 = components.base64
+        let plainText = components.plainText
+        guard let data = Data(base64Encoded: base64) else { return nil }
+        
+        let allowedClasses: [AnyClass] = [
+            NSAttributedString.self,
+            NSMutableAttributedString.self,
+            NSTextAttachment.self,
+            UIColor.self,
+            UIImage.self,
+            UIFont.self,
+            NSURL.self,
+            NSData.self,
+            NSDictionary.self,
+            NSString.self,
+            NSNumber.self,
+            NSParagraphStyle.self,
+            NSMutableParagraphStyle.self,
+            NSTextTab.self,
+            NSShadow.self
+        ]
+        
+        guard let attributed = try? NSKeyedUnarchiver.unarchivedObject(ofClasses: allowedClasses, from: data) as? NSAttributedString else {
+            return nil
+        }
+        
+        let mutable = NSMutableAttributedString(attributedString: attributed)
+        ensureImageMetadata(in: mutable, maxWidth: maxWidth)
+        return (mutable, plainText)
+    }
+    
+    static func plainText(from serialized: String) -> String {
+        if let components = components(from: serialized) {
+            return components.plainText
+        }
+        let fallback = EditorContentParser.deserialize(serialized, maxWidth: 300)
+        return plainTextRepresentation(of: fallback)
+    }
+    
+    static func ensureImageMetadata(in attributed: NSMutableAttributedString, maxWidth: CGFloat? = nil) {
+        let range = NSRange(location: 0, length: attributed.length)
+        attributed.enumerateAttribute(.attachment, in: range, options: []) { value, r, _ in
+            guard let attachment = value as? NSTextAttachment else { return }
+            
+            if attributed.attribute(.imageData, at: r.location, effectiveRange: nil) == nil,
+               let data = attachmentImageData(attachment) {
+                attributed.addAttribute(.imageData, value: data.base64EncodedString(), range: r)
+            }
+            
+            var targetWidth: CGFloat = attachment.bounds.width
+            if let maxWidth = maxWidth, maxWidth > 0 {
+                let cappedMax = max(24, maxWidth)
+                var mode = ImageSizeMode.normal
+                if let raw = attributed.attribute(.imageSizeMode, at: r.location, effectiveRange: nil) as? String,
+                   let parsed = ImageSizeMode(rawValue: raw) {
+                    mode = parsed
+                }
+                targetWidth = adjustedWidth(for: attachment, mode: mode, maxWidth: cappedMax)
+            }
+            
+            if targetWidth > 0, let image = attachment.image ?? attachment.image(forBounds: attachment.bounds, textContainer: nil, characterIndex: 0) {
+                let aspect = image.size.height / max(image.size.width, 1)
+                attachment.bounds = CGRect(x: 0, y: 0, width: targetWidth, height: targetWidth * aspect)
+            }
+        }
+    }
+    
+    static func attachmentImageData(_ attachment: NSTextAttachment) -> Data? {
+        if let fileData = attachment.fileWrapper?.regularFileContents {
+            return fileData
+        }
+        if let image = attachment.image ?? attachment.image(forBounds: attachment.bounds, textContainer: nil, characterIndex: 0) {
+            if image.hasAlpha { return image.pngData() }
+            return image.jpegData(compressionQuality: 0.8)
+        }
+        return nil
+    }
+    
+    private static func adjustedWidth(for attachment: NSTextAttachment, mode: ImageSizeMode, maxWidth: CGFloat) -> CGFloat {
+        guard let image = attachment.image ?? attachment.image(forBounds: attachment.bounds, textContainer: nil, characterIndex: 0) else {
+            return attachment.bounds.width
+        }
+        let candidate = mode == .compact ? min(maxWidth, 160) : min(image.size.width, maxWidth)
+        return max(24, candidate)
+    }
+    
+    private static func components(from text: String) -> (base64: String, plainText: String)? {
+        guard
+            let prefixRange = text.range(of: attrPrefix),
+            let suffixRange = text.range(of: attrSuffix, range: prefixRange.upperBound..<text.endIndex)
+        else { return nil }
+        
+        let base64 = String(text[prefixRange.upperBound..<suffixRange.lowerBound])
+        let plain = String(text[suffixRange.upperBound...])
+        return (base64, plain)
+    }
+    
+    private static func plainTextRepresentation(of attributed: NSAttributedString) -> String {
+        var result = ""
+        attributed.enumerateAttributes(in: NSRange(location: 0, length: attributed.length), options: []) { attrs, range, _ in
+            if attrs[.attachment] != nil {
+                result += "[Image]"
+            } else {
+                result += attributed.attributedSubstring(from: range).string
+            }
+        }
+        return result
+    }
 }
 
 private extension UIImage {
@@ -50,7 +250,8 @@ enum MarkdownAction: Int, CaseIterable, Hashable {
     case bulletList, numberedList, indent, outdent
     case alignLeft, alignCenter, alignRight
     case link, image, blockquote
-    case undo, redo, find
+    case undo, redo
+    case imageToggleCompact
 }
 
 // MARK: - Global editor state & notifications
@@ -207,77 +408,34 @@ struct MarkdownEditor: UIViewRepresentable {
         // MARK: Serialization (save images as base64)
         
         func serializeContent(from attributed: NSAttributedString) -> String {
-            var result = ""
-            attributed.enumerateAttributes(in: NSRange(location: 0, length: attributed.length)) { attrs, range, _ in
-                if let attachment = attrs[.attachment] as? NSTextAttachment,
-                   let image = attachment.image ?? attachment.image(forBounds: attachment.bounds, textContainer: nil, characterIndex: 0),
-                   let data = (image.hasAlpha ? image.pngData() : image.jpegData(compressionQuality: 0.8)) {
-                    if let existing = imageCache[data] {
-                        result += "[IMG:\(existing)]"
-                    } else {
-                        let encoded = data.base64EncodedString()
-                        imageCache[data] = encoded
-                        result += "[IMG:\(encoded)]"
-                    }
-                } else {
-                    result += attributed.attributedSubstring(from: range).string
+            let mutable = attributed as? NSMutableAttributedString ?? NSMutableAttributedString(attributedString: attributed)
+            let serialized = MarkdownSerialization.serialize(mutable)
+            
+            mutable.enumerateAttribute(.imageData, in: NSRange(location: 0, length: mutable.length), options: []) { value, _, _ in
+                if let encoded = value as? String, let data = Data(base64Encoded: encoded) {
+                    imageCache[data] = encoded
                 }
             }
-            return result
+            return serialized
         }
         
         func deserializeContent(_ text: String) -> NSAttributedString {
-            let result = NSMutableAttributedString()
-            var lastIndex = text.startIndex
-            
-            let pattern = "\\[IMG:([A-Za-z0-9+/=]+)\\]"
-            if let regex = try? NSRegularExpression(pattern: pattern) {
-                let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-                
-                for match in matches {
-                    // Add text before image
-                    if let beforeRange = Range(NSRange(location: text.distance(from: text.startIndex, to: lastIndex),
-                                                       length: match.range.location - text.distance(from: text.startIndex, to: lastIndex)), in: text) {
-                        let beforeText = String(text[beforeRange])
-                        result.append(NSAttributedString(string: beforeText, attributes: [
-                            .font: EditorTheme.baseFont,
-                            .foregroundColor: EditorTheme.textColor
-                        ]))
-                    }
-                    
-                    // Add image
-                    if match.numberOfRanges > 1,
-                       let base64Range = Range(match.range(at: 1), in: text) {
-                        let base64 = String(text[base64Range])
-                        if let data = Data(base64Encoded: base64),
-                           let image = UIImage(data: data) {
-                            let attachment = NSTextAttachment()
-                            let maxW = (textView?.bounds.width ?? 300) - 28
-                            let aspect = image.size.height / image.size.width
-                            let w = min(image.size.width, maxW)
-                            let h = w * aspect
-                            attachment.image = image
-                            attachment.bounds = CGRect(x: 0, y: 0, width: w, height: h)
-                            result.append(NSAttributedString(attachment: attachment))
-                        }
-                    }
-                    
-                    if let matchRange = Range(match.range, in: text) {
-                        lastIndex = matchRange.upperBound
+            let availableWidth = max((textView?.bounds.width ?? 300) - 28, 60)
+            if let (attr, _) = MarkdownSerialization.deserialize(text, maxWidth: availableWidth) {
+                attr.enumerateAttribute(.imageData, in: NSRange(location: 0, length: attr.length), options: []) { value, _, _ in
+                    if let encoded = value as? String, let data = Data(base64Encoded: encoded) {
+                        imageCache[data] = encoded
                     }
                 }
+                return attr
             }
-            
-            // Add remaining text
-            if lastIndex < text.endIndex {
-                let remaining = String(text[lastIndex...])
-                result.append(NSAttributedString(string: remaining, attributes: [
-                    .font: EditorTheme.baseFont,
-                    .foregroundColor: EditorTheme.textColor
-                ]))
+            let fallback = EditorContentParser.deserialize(text, maxWidth: availableWidth)
+            fallback.enumerateAttribute(.imageData, in: NSRange(location: 0, length: fallback.length), options: []) { value, _, _ in
+                if let encoded = value as? String, let data = Data(base64Encoded: encoded) {
+                    imageCache[data] = encoded
+                }
             }
-            
-            return result
+            return fallback
         }
 
         // MARK: Text changes
@@ -285,12 +443,19 @@ struct MarkdownEditor: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) {
             guard !isProgrammaticChange else { return }
             saveWorkItem?.cancel()
-            let item = DispatchWorkItem { [weak self] in
-                guard let self = self, !textView.undoManager!.isUndoing else { return }
-                self.parent.text = self.serializeContent(from: textView.attributedText)
+
+            let updateParent: () -> Void = { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.parent.text = strongSelf.serializeContent(from: textView.attributedText)
             }
-            saveWorkItem = item
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
+
+            if textView.undoManager?.isUndoing == true || textView.undoManager?.isRedoing == true {
+                updateParent()
+            } else {
+                let item = DispatchWorkItem(block: updateParent)
+                saveWorkItem = item
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
+            }
 
             parent.selectedRange = textView.selectedRange
             updateActiveStylesAsync(textView)
@@ -299,8 +464,8 @@ struct MarkdownEditor: UIViewRepresentable {
         private func updateActiveStylesAsync(_ textView: UITextView) {
             styleCalculationWorkItem?.cancel()
             styleCalculationWorkItem = DispatchWorkItem { [weak self] in
-                guard let self = self else { return }
-                let styles = self.currentActiveStyles(in: textView)
+                guard let strongSelf = self else { return }
+                let styles = strongSelf.currentActiveStyles(in: textView)
                 NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                 object: nil, userInfo: ["styles": styles])
             }
@@ -354,8 +519,31 @@ struct MarkdownEditor: UIViewRepresentable {
             guard let tv = textView else { return }
 
             switch action {
-            case .undo: tv.undoManager?.undo(); return
-            case .redo: tv.undoManager?.redo(); return
+            case .undo:
+                tv.undoManager?.undo()
+                parent.text = serializeContent(from: tv.attributedText)
+                parent.selectedRange = tv.selectedRange
+                NotificationCenter.default.post(name: .editorActiveStylesDidChange,
+                                                object: nil,
+                                                userInfo: ["styles": currentActiveStyles(in: tv)])
+                return
+            case .redo:
+                tv.undoManager?.redo()
+                parent.text = serializeContent(from: tv.attributedText)
+                parent.selectedRange = tv.selectedRange
+                NotificationCenter.default.post(name: .editorActiveStylesDidChange,
+                                                object: nil,
+                                                userInfo: ["styles": currentActiveStyles(in: tv)])
+                return
+            case .imageToggleCompact:
+                if WysiwygActionHandler.toggleImageSize(in: tv) {
+                    parent.text = serializeContent(from: tv.attributedText)
+                    parent.selectedRange = tv.selectedRange
+                    NotificationCenter.default.post(name: .editorActiveStylesDidChange,
+                                                    object: nil,
+                                                    userInfo: ["styles": currentActiveStyles(in: tv)])
+                }
+                return
             default: break
             }
 
@@ -381,8 +569,6 @@ struct MarkdownEditor: UIViewRepresentable {
                 presentImagePickerPublic()
             } else if action == .link {
                 promptForLink(tv)
-            } else if action == .find {
-                tv.toggleFindBar(show: nil)
             }
         }
         
@@ -400,8 +586,7 @@ struct MarkdownEditor: UIViewRepresentable {
             }
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
             alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
-                guard let self = self else { return }
-                
+                guard self != nil else { return }
                 var urlString = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 if !urlString.isEmpty && !urlString.contains("://") { urlString = "https://" + urlString }
                 guard !urlString.isEmpty, let url = URL(string: urlString), url.scheme != nil else { return }
@@ -544,74 +729,11 @@ struct MarkdownEditor: UIViewRepresentable {
 // MARK: - Custom UITextView
 
 final class EditorTextView: UITextView {
-    private var findBar: FindReplaceBar?
-    private var findBarBottomConstraint: NSLayoutConstraint?
-    
     override func didMoveToWindow() {
         super.didMoveToWindow()
         undoManager?.levelsOfUndo = 50
     }
-
-    func toggleFindBar(show: Bool?) {
-        let shouldShow: Bool = {
-            if let s = show { return s }
-            return findBar == nil
-        }()
-
-        if shouldShow {
-            if findBar == nil {
-                let bar = FindReplaceBar()
-                bar.translatesAutoresizingMaskIntoConstraints = false
-                addSubview(bar)
-
-                let kbdGuide = keyboardLayoutGuide
-                findBarBottomConstraint = bar.bottomAnchor.constraint(equalTo: kbdGuide.topAnchor)
-                NSLayoutConstraint.activate([
-                    bar.leadingAnchor.constraint(equalTo: leadingAnchor),
-                    bar.trailingAnchor.constraint(equalTo: trailingAnchor),
-                    findBarBottomConstraint!
-                ])
-
-                bar.onFindNext = { [weak self] query in self?.findNext(query: query) }
-                bar.onReplace = { [weak self] query, replacement in self?.replaceCurrent(query: query, replacement: replacement) }
-                bar.onClose = { [weak self] in self?.toggleFindBar(show: false) }
-                findBar = bar
-            }
-            contentInset.bottom = 56
-            verticalScrollIndicatorInsets.bottom = 56
-        } else {
-            findBar?.removeFromSuperview(); findBar = nil
-            contentInset.bottom = 0
-            verticalScrollIndicatorInsets.bottom = 0
-        }
-    }
-
-    private func findNext(query: String) {
-        guard !query.isEmpty else { return }
-        let s = attributedText.string as NSString
-        let start = selectedRange.location + selectedRange.length
-        let searchRange = NSRange(location: start, length: max(0, s.length - start))
-        let firstRange = s.range(of: query, options: .caseInsensitive, range: searchRange)
-        let secondRange = s.range(of: query, options: .caseInsensitive, range: NSRange(location: 0, length: s.length))
-        if let r = (firstRange.location != NSNotFound ? firstRange : nil) ?? (secondRange.location != NSNotFound ? secondRange : nil) {
-            selectedRange = r
-            scrollRangeToVisible(r)
-        }
-    }
-
-    private func replaceCurrent(query: String, replacement: String) {
-        guard !query.isEmpty else { return }
-        let s = attributedText.string as NSString
-        let r = selectedRange
-        if r.length > 0, s.substring(with: r).localizedCaseInsensitiveContains(query) {
-            let baseAttrs = WysiwygActionHandler.baseAttributes(from: attributedText, at: r.location)
-            let insertion = NSAttributedString(string: replacement, attributes: baseAttrs)
-            replace(range: r, with: insertion)
-            selectedRange = NSRange(location: r.location + (replacement as NSString).length, length: 0)
-        } else {
-            findNext(query: query)
-        }
-    }
+ 
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(editLink) || action == #selector(removeLink) { return currentLinkRange() != nil }
@@ -625,10 +747,12 @@ final class EditorTextView: UITextView {
         alert.addTextField { tf in tf.text = url.absoluteString }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self] _ in
-            guard let self = self, let s = alert.textFields?.first?.text, let newURL = URL(string: s) else { return }
-            self.textStorage.beginEditing()
-            self.textStorage.addAttribute(.link, value: newURL, range: r)
-            self.textStorage.endEditing()
+            guard let strongSelf = self,
+                  let s = alert.textFields?.first?.text,
+                  let newURL = URL(string: s) else { return }
+            strongSelf.textStorage.beginEditing()
+            strongSelf.textStorage.addAttribute(.link, value: newURL, range: r)
+            strongSelf.textStorage.endEditing()
         })
         currentTopVC()?.present(alert, animated: true)
     }
@@ -668,69 +792,6 @@ final class EditorTextView: UITextView {
     func currentLineString() -> String {
         let ns = attributedText.string as NSString
         return ns.substring(with: currentLineRange())
-    }
-}
-
-// MARK: - Find/Replace bar
-
-final class FindReplaceBar: UIView {
-    let findField = UITextField()
-    let replaceField = UITextField()
-    let findNextBtn = UIButton(type: .system)
-    let replaceBtn = UIButton(type: .system)
-    let closeBtn = UIButton(type: .system)
-
-    var onFindNext: ((String) -> Void)?
-    var onReplace: ((String, String) -> Void)?
-    var onClose: (() -> Void)?
-
-    override init(frame: CGRect) { super.init(frame: frame); setup() }
-    required init?(coder: NSCoder) { super.init(coder: coder); setup() }
-
-    private func setup() {
-        backgroundColor = UIColor.systemGray6
-        layer.borderColor = UIColor.separator.cgColor
-        layer.borderWidth = 0.5
-
-        findField.placeholder = "Find"
-        replaceField.placeholder = "Replace"
-        [findField, replaceField].forEach {
-            $0.borderStyle = .roundedRect
-            $0.translatesAutoresizingMaskIntoConstraints = false
-            $0.clearButtonMode = .whileEditing
-            addSubview($0)
-        }
-
-        findNextBtn.setTitle("Next", for: .normal)
-        replaceBtn.setTitle("Replace", for: .normal)
-        closeBtn.setTitle("✕", for: .normal)
-        [findNextBtn, replaceBtn, closeBtn].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; addSubview($0) }
-
-        findNextBtn.addAction(UIAction { [weak self] _ in
-            guard let q = self?.findField.text else { return }
-            self?.onFindNext?(q)
-        }, for: .touchUpInside)
-        replaceBtn.addAction(UIAction { [weak self] _ in
-            guard let q = self?.findField.text, let r = self?.replaceField.text else { return }
-            self?.onReplace?(q, r)
-        }, for: .touchUpInside)
-        closeBtn.addAction(UIAction { [weak self] _ in self?.onClose?() }, for: .touchUpInside)
-
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 54),
-            findField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            findField.centerYAnchor.constraint(equalTo: centerYAnchor),
-            findField.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.30),
-            replaceField.leadingAnchor.constraint(equalTo: findField.trailingAnchor, constant: 8),
-            replaceField.centerYAnchor.constraint(equalTo: centerYAnchor),
-            replaceField.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.30),
-            findNextBtn.leadingAnchor.constraint(equalTo: replaceField.trailingAnchor, constant: 8),
-            findNextBtn.centerYAnchor.constraint(equalTo: centerYAnchor),
-            replaceBtn.leadingAnchor.constraint(equalTo: findNextBtn.trailingAnchor, constant: 8),
-            replaceBtn.centerYAnchor.constraint(equalTo: centerYAnchor),
-            closeBtn.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            closeBtn.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
     }
 }
 
@@ -1064,19 +1125,66 @@ class WysiwygActionHandler {
 
     // MARK: Images
 
+    static func toggleImageSize(in tv: UITextView) -> Bool {
+        guard tv.attributedText.length > 0 else { return false }
+        let selection = tv.selectedRange
+        var effectiveRange = NSRange(location: 0, length: 0)
+        let candidateIndices: [Int] = {
+            var indices = [selection.location]
+            if selection.length > 0 { indices.append(selection.location + selection.length - 1) }
+            if selection.location > 0 { indices.append(selection.location - 1) }
+            return indices.compactMap {
+                guard tv.attributedText.length > 0 else { return nil }
+                return max(0, min($0, tv.attributedText.length - 1))
+            }
+        }()
+        
+        var attachment: NSTextAttachment?
+        var resolvedIndex: Int?
+        for candidate in candidateIndices {
+            if let found = tv.attributedText.attribute(.attachment, at: candidate, effectiveRange: &effectiveRange) as? NSTextAttachment {
+                attachment = found
+                resolvedIndex = candidate
+                break
+            }
+        }
+        guard let targetAttachment = attachment, let index = resolvedIndex else { return false }
+        
+        let currentModeRaw = tv.attributedText.attribute(.imageSizeMode, at: index, effectiveRange: nil) as? String
+        let currentMode = ImageSizeMode(rawValue: currentModeRaw ?? ImageSizeMode.normal.rawValue) ?? .normal
+        let newMode: ImageSizeMode = (currentMode == .compact) ? .normal : .compact
+        tv.undoManager?.beginUndoGrouping()
+        guard updateAttachmentBounds(targetAttachment, mode: newMode, in: tv) else {
+            tv.undoManager?.endUndoGrouping()
+            return false
+        }
+        tv.textStorage.beginEditing()
+        tv.textStorage.addAttribute(.imageSizeMode, value: newMode.rawValue, range: effectiveRange)
+        tv.textStorage.endEditing()
+        tv.undoManager?.endUndoGrouping()
+        tv.setNeedsLayout()
+        tv.layoutIfNeeded()
+        return true
+    }
+    
     static func insertImage(_ image: UIImage, into tv: UITextView) {
         let maxW = tv.bounds.width - tv.textContainerInset.left - tv.textContainerInset.right - 8
-        let aspect = image.size.height / image.size.width
+        let aspect = image.size.height / max(image.size.width, 1)
         let w = max(24, min(image.size.width, maxW))
         let h = w * aspect
         let att = NSTextAttachment()
         att.image = image
         att.bounds = CGRect(x: 0, y: 0, width: w, height: h)
-        let node = NSAttributedString(attachment: att)
+        
+        let node = NSMutableAttributedString(attachment: att)
+        if let data = (image.hasAlpha ? image.pngData() : image.jpegData(compressionQuality: 0.8)) {
+            node.addAttribute(.imageData, value: data.base64EncodedString(), range: NSRange(location: 0, length: node.length))
+        }
+        node.addAttribute(.imageSizeMode, value: ImageSizeMode.normal.rawValue, range: NSRange(location: 0, length: node.length))
         
         tv.undoManager?.beginUndoGrouping()
         tv.replace(range: tv.selectedRange, with: node)
-        tv.selectedRange = NSRange(location: tv.selectedRange.location + 1, length: 0)
+        tv.selectedRange = NSRange(location: tv.selectedRange.location + node.length, length: 0)
         tv.undoManager?.endUndoGrouping()
     }
     
@@ -1087,6 +1195,18 @@ class WysiwygActionHandler {
         if attrs[.font] == nil { attrs[.font] = EditorTheme.baseFont }
         if attrs[.foregroundColor] == nil { attrs[.foregroundColor] = EditorTheme.textColor }
         return attrs
+    }
+    
+    private static func updateAttachmentBounds(_ attachment: NSTextAttachment, mode: ImageSizeMode, in tv: UITextView) -> Bool {
+        guard let image = attachment.image ?? attachment.image(forBounds: attachment.bounds, textContainer: tv.textContainer, characterIndex: 0) else {
+            return false
+        }
+        let maxW = tv.bounds.width - tv.textContainerInset.left - tv.textContainerInset.right - 8
+        let targetWidth = mode == .compact ? min(maxW, 160) : min(image.size.width, maxW)
+        let width = max(24, targetWidth)
+        let height = width * (image.size.height / max(image.size.width, 1))
+        attachment.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        return true
     }
 }
 
@@ -1161,6 +1281,9 @@ struct MarkdownToolbarView: View {
                     Button(action: { coordinator?.handleMarkdownAction(.image) }) {
                         Label("Image", systemImage: "photo")
                     }
+                    Button(action: { coordinator?.handleMarkdownAction(.imageToggleCompact) }) {
+                        Label("Toggle Image Size", systemImage: "arrow.up.left.and.down.right")
+                    }
                     Button(action: { coordinator?.handleMarkdownAction(.blockquote) }) {
                         Label("Quote", systemImage: "quote.bubble")
                     }
@@ -1180,12 +1303,6 @@ struct MarkdownToolbarView: View {
                 HStack(spacing: 6) {
                     toolbarButton("↶", .undo, hint: "Undo")
                     toolbarButton("↷", .redo, hint: "Redo")
-                    Button(action: { coordinator?.handleMarkdownAction(.find) }) {
-                        Image(systemName: "magnifyingglass")
-                            .frame(width: 32, height: 32)
-                            .background(Color(.systemGray5))
-                            .cornerRadius(6)
-                    }
                 }
             }
             .padding(.horizontal, 16)

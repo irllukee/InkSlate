@@ -71,7 +71,7 @@ struct MainContentView: View {
             case .budget:
                 BudgetMainView()
             case .recipes:
-                ModernRecipeMainView()
+            RecipeTabView()
             case .places:
                 PlacesMainView()
             case .quotes:

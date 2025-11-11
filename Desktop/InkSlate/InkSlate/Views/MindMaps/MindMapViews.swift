@@ -35,6 +35,11 @@ struct MindMapListView: View {
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button("Delete") {
                         viewContext.delete(mindMap)
+                        do {
+                            try viewContext.save()
+                        } catch {
+                            print("Failed to delete mind map: \(error)")
+                        }
                     }
                     .tint(.red)
                     

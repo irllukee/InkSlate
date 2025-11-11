@@ -39,31 +39,6 @@ enum BalanceStatus {
     }
 }
 
-// MARK: - Recurring Frequency Enum
-
-enum RecurringFrequency: String, CaseIterable {
-    case daily = "daily"
-    case weekly = "weekly"
-    case monthly = "monthly"
-    case quarterly = "quarterly"
-    case yearly = "yearly"
-    
-    var displayName: String {
-        switch self {
-        case .daily:
-            return "Daily"
-        case .weekly:
-            return "Weekly"
-        case .monthly:
-            return "Monthly"
-        case .quarterly:
-            return "Quarterly"
-        case .yearly:
-            return "Yearly"
-        }
-    }
-}
-
 // MARK: - Formatters
 
 extension NumberFormatter {
@@ -109,6 +84,10 @@ struct BudgetMainView: View {
     @FetchRequest(
         sortDescriptors: [NSSortDescriptor(keyPath: \BudgetItem.date, ascending: false)]
     ) private var budgetItems: FetchedResults<BudgetItem>
+    
+    @FetchRequest(
+        sortDescriptors: []
+    ) private var subcategories: FetchedResults<BudgetSubcategory>
     @StateObject private var budgetManager = BudgetManager.shared
     @State private var selectedItem: BudgetItem?
     @State private var showingCreateItem = false
@@ -398,14 +377,8 @@ struct BudgetMainView: View {
     // MARK: - Computed Properties
     // UPDATED: No date filtering - just sum all budget items
     private var totalBudget: Double {
-        // Sum all budget items (subcategory budgets) - no date filtering
-        let filteredItems = budgetItems.filter { item in
-            (item.name?.hasSuffix(" Budget") ?? false) &&
-            (item.name ?? "") != "Monthly Income"
-        }
-        
-        return filteredItems.reduce(0.0) { total, item in
-            total + item.amount
+        subcategories.reduce(0.0) { total, subcategory in
+            total + subcategory.budgetAmount
         }
     }
     
@@ -566,30 +539,20 @@ struct CategoryCardView: View {
     let onCreateItem: (String) -> Void
     
     @Environment(\.managedObjectContext) private var viewContext
-    @State private var budgetAmount: Double = 0.0
     @State private var showingSubcategories = false
     @State private var subcategoryBudgets: [String: Double] = [:]
     @State private var subcategoryTextInputs: [String: String] = [:]
+    @State private var showingAddSubcategoryField = false
+    @State private var newSubcategoryName: String = ""
     @FocusState private var focusedSubcategory: String?
+    @FocusState private var isAddingSubcategoryFocused: Bool
     
     // 4. Fix the totalBudget calculation
     private var totalBudget: Double {
-        let request: NSFetchRequest<BudgetItem> = BudgetItem.fetchRequest()
-        
-        // Get all items for subcategories in this category
-        var total = 0.0
-        
-        for subcategory in defaultSubcategories {
-            let budgetName = "\(subcategory) Budget"
-            request.predicate = NSPredicate(format: "name == %@", budgetName)
-            
-            if let items = try? viewContext.fetch(request),
-               let budgetItem = items.first {
-                total += budgetItem.amount
-            }
+        guard let subcategories = category.subcategories as? Set<BudgetSubcategory> else { return 0.0 }
+        return subcategories.reduce(0.0) { result, subcategory in
+            result + subcategory.budgetAmount
         }
-        
-        return total
     }
     
     // 5. Also update the totalSpent calculation to use actual data
@@ -642,15 +605,32 @@ struct CategoryCardView: View {
         }
     }
     
+    private var subcategoryNames: [String] {
+        var names = defaultSubcategories
+        if let existing = category.subcategories as? Set<BudgetSubcategory> {
+            let sortedExisting = existing.sorted { lhs, rhs in
+                if lhs.sortOrder == rhs.sortOrder {
+                    return (lhs.name ?? "") < (rhs.name ?? "")
+                }
+                return lhs.sortOrder < rhs.sortOrder
+            }
+            for subcategory in sortedExisting {
+                guard let name = subcategory.name, !name.isEmpty else { continue }
+                if !names.contains(name) {
+                    names.append(name)
+                }
+            }
+        }
+        return names
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
             // Category header with budget input
             categoryHeader
             
-            // Subcategories dropdown (if available)
-            if !defaultSubcategories.isEmpty {
-                subcategoriesDropdown
-            }
+            // Subcategories dropdown
+            subcategoriesDropdown
             
             // Balance summary
             balanceSummary
@@ -658,6 +638,9 @@ struct CategoryCardView: View {
             .padding(DesignSystem.Spacing.md)
             .minimalistCard(.outlined)
         .onAppear {
+            loadSubcategoryBudgets()
+        }
+        .onChange(of: category.subcategories?.count ?? 0) { _, _ in
             loadSubcategoryBudgets()
         }
     }
@@ -700,7 +683,14 @@ struct CategoryCardView: View {
             
             if showingSubcategories {
                 VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                    ForEach(defaultSubcategories, id: \.self) { subcategory in
+                    if subcategoryNames.isEmpty {
+                        Text("No subcategories yet")
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundColor(DesignSystem.Colors.textTertiary)
+                            .padding(.bottom, DesignSystem.Spacing.xs)
+                    }
+                    
+                    ForEach(subcategoryNames, id: \.self) { subcategory in
                         HStack {
                             Text("•")
                                 .font(DesignSystem.Typography.caption)
@@ -717,52 +707,39 @@ struct CategoryCardView: View {
                             
                             Spacer()
                             
-                            // Budget input for this subcategory
-                            HStack(spacing: 2) {
-                                Text("$")
-                                    .font(DesignSystem.Typography.caption)
-                                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                                
-                                TextField("0.00", text: Binding(
-                                    get: {
-                                        subcategoryTextInputs[subcategory] ?? formatAmount(subcategoryBudgets[subcategory] ?? 0.0)
-                                    },
-                                    set: { newValue in
-                                        subcategoryTextInputs[subcategory] = newValue
-                                        // Parse and save the value
-                                        if let value = Double(newValue) {
-                                            subcategoryBudgets[subcategory] = value
-                                            saveSubcategoryBudget(subcategory, amount: value)
-                                        } else if newValue.isEmpty {
-                                            subcategoryBudgets[subcategory] = 0.0
-                                            saveSubcategoryBudget(subcategory, amount: 0.0)
-                                        }
-                                    }
-                                ))
+                            budgetInput(for: subcategory)
+                        }
+                    }
+                    
+                    if showingAddSubcategoryField {
+                        HStack(spacing: DesignSystem.Spacing.sm) {
+                            TextField("New subcategory", text: $newSubcategoryName)
+                                .textInputAutocapitalization(.words)
                                 .font(DesignSystem.Typography.caption)
                                 .foregroundColor(DesignSystem.Colors.textPrimary)
-                                .keyboardType(.decimalPad)
-                                .multilineTextAlignment(.trailing)
-                                .frame(width: 60)
-                                .textFieldStyle(.plain)
-                                .focused($focusedSubcategory, equals: subcategory)
-                                .onTapGesture {
-                                    // Clear the text input when tapped
-                                    subcategoryTextInputs[subcategory] = ""
-                                    focusedSubcategory = subcategory
+                                .textFieldStyle(.roundedBorder)
+                                .focused($isAddingSubcategoryFocused)
+                                .onAppear {
+                                    isAddingSubcategoryFocused = true
                                 }
-                                .onChange(of: focusedSubcategory) { _, newFocus in
-                                    // When focus is lost, clear the text input to show formatted value
-                                    if newFocus != subcategory {
-                                        subcategoryTextInputs[subcategory] = nil
-                                    }
-                                }
+                            
+                            Button("Add") {
+                                addNewSubcategory()
                             }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(DesignSystem.Colors.backgroundSecondary)
-                            .cornerRadius(DesignSystem.CornerRadius.xs)
+                            .font(DesignSystem.Typography.caption)
+                            .fontWeight(.semibold)
                         }
+                        .padding(.top, DesignSystem.Spacing.xs)
+                    } else {
+                        Button {
+                            showingAddSubcategoryField = true
+                        } label: {
+                            Label("Add Subcategory", systemImage: "plus.circle")
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundColor(DesignSystem.Colors.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, DesignSystem.Spacing.xs)
                     }
                 }
                 .padding(.leading, DesignSystem.Spacing.md)
@@ -771,20 +748,67 @@ struct CategoryCardView: View {
         }
     }
     
-    // 1. Fix loadSubcategoryBudgets to actually fetch data
-    private func loadSubcategoryBudgets() {
-        let request: NSFetchRequest<BudgetItem> = BudgetItem.fetchRequest()
-        
-        for subcategory in defaultSubcategories {
-            // Fetch the budget item for this subcategory
-            request.predicate = NSPredicate(format: "name == %@", "\(subcategory) Budget")
+    private func budgetInput(for subcategory: String) -> some View {
+        HStack(spacing: 2) {
+            Text("$")
+                .font(DesignSystem.Typography.caption)
+                .foregroundColor(DesignSystem.Colors.textSecondary)
             
-            if let items = try? viewContext.fetch(request),
-               let budgetItem = items.first {
-                subcategoryBudgets[subcategory] = budgetItem.amount
-            } else {
-                subcategoryBudgets[subcategory] = 0.0
+            TextField("0.00", text: Binding(
+                get: {
+                    subcategoryTextInputs[subcategory] ?? formatAmount(subcategoryBudgets[subcategory] ?? 0.0)
+                },
+                set: { newValue in
+                    subcategoryTextInputs[subcategory] = newValue
+                    if let value = Double(newValue) {
+                        subcategoryBudgets[subcategory] = value
+                        saveSubcategoryBudget(subcategory, amount: value)
+                    } else if newValue.isEmpty {
+                        subcategoryBudgets[subcategory] = 0.0
+                        saveSubcategoryBudget(subcategory, amount: 0.0)
+                    }
+                }
+            ))
+            .font(DesignSystem.Typography.caption)
+            .foregroundColor(DesignSystem.Colors.textPrimary)
+            .keyboardType(.decimalPad)
+            .multilineTextAlignment(.trailing)
+            .frame(width: 68)
+            .textFieldStyle(.plain)
+            .focused($focusedSubcategory, equals: subcategory)
+            .onTapGesture {
+                subcategoryTextInputs[subcategory] = ""
+                focusedSubcategory = subcategory
             }
+            .onChange(of: focusedSubcategory) { _, newFocus in
+                if newFocus != subcategory {
+                    subcategoryTextInputs[subcategory] = nil
+                }
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(DesignSystem.Colors.backgroundSecondary)
+        .cornerRadius(DesignSystem.CornerRadius.xs)
+    }
+    
+    private func loadSubcategoryBudgets() {
+        subcategoryBudgets.removeAll()
+        for name in subcategoryNames {
+            guard let subcategory = findOrCreateSubcategory(named: name) else { continue }
+            
+            if subcategory.budgetAmount == 0,
+               let legacyAmount = legacyBudgetAmount(for: name) {
+                subcategory.budgetAmount = legacyAmount
+                subcategory.modifiedDate = Date()
+                removeLegacyBudgetItems(for: name)
+            }
+            
+            subcategoryBudgets[name] = subcategory.budgetAmount
+        }
+        
+        if viewContext.hasChanges {
+            try? viewContext.save()
         }
     }
     
@@ -795,61 +819,87 @@ struct CategoryCardView: View {
         return String(format: "%.2f", amount)
     }
     
-    // 2. Fix saveSubcategoryBudget to properly find and update items
     private func saveSubcategoryBudget(_ subcategory: String, amount: Double) {
-        let budgetName = "\(subcategory) Budget"
+        guard let subcategoryEntity = findOrCreateSubcategory(named: subcategory) else { return }
+        subcategoryEntity.budgetAmount = amount
+        subcategoryEntity.modifiedDate = Date()
         
-        // Fetch existing budget item
-        let request: NSFetchRequest<BudgetItem> = BudgetItem.fetchRequest()
-        request.predicate = NSPredicate(format: "name == %@", budgetName)
-        
-        let existingItems = (try? viewContext.fetch(request)) ?? []
-        
-        if let existingItem = existingItems.first {
-            // Update existing item
-            existingItem.amount = amount
-            existingItem.modifiedDate = Date()
-        } else if amount > 0 {
-            // Create new item only if amount > 0
-            let budgetItem = BudgetItem(context: viewContext)
-            budgetItem.name = budgetName
-            budgetItem.amount = amount
-            budgetItem.date = Date()
-            budgetItem.createdDate = Date()
-            budgetItem.modifiedDate = Date()
-            
-            // Find or create the subcategory entity
-            if let subcategoryEntity = findOrCreateSubcategory(named: subcategory) {
-                budgetItem.subcategory = subcategoryEntity
-            }
-            
-            viewContext.insert(budgetItem)
-        }
+        removeLegacyBudgetItems(for: subcategory)
         
         do {
             try viewContext.save()
-            print("Saved budget for \(subcategory): $\(amount)")
         } catch {
             print("Failed to save budget: \(error)")
         }
     }
     
-    // 3. Add helper to find or create subcategory
-    private func findOrCreateSubcategory(named name: String) -> BudgetSubcategory? {
-        // First, check if subcategory already exists
-        if let existingSubcategory = category.subcategories?.first(where: { 
-            ($0 as? BudgetSubcategory)?.name == name 
-        }) as? BudgetSubcategory {
-            return existingSubcategory
+    private func removeLegacyBudgetItems(for subcategoryName: String) {
+        let budgetName = "\(subcategoryName) Budget"
+        let request: NSFetchRequest<BudgetItem> = BudgetItem.fetchRequest()
+        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            NSPredicate(format: "name == %@", budgetName),
+            NSPredicate(format: "subcategory.category == %@", category)
+        ])
+        let items = (try? viewContext.fetch(request)) ?? []
+        items.forEach { item in
+            viewContext.delete(item)
+        }
+    }
+    
+    private func legacyBudgetAmount(for subcategoryName: String) -> Double? {
+        let budgetName = "\(subcategoryName) Budget"
+        let request: NSFetchRequest<BudgetItem> = BudgetItem.fetchRequest()
+        request.fetchLimit = 1
+        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            NSPredicate(format: "name == %@", budgetName),
+            NSPredicate(format: "subcategory.category == %@", category)
+        ])
+        guard let item = try? viewContext.fetch(request).first else {
+            return nil
+        }
+        return item.amount
+    }
+    
+    private func addNewSubcategory() {
+        let trimmedName = newSubcategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        guard !subcategoryNames.contains(trimmedName) else {
+            newSubcategoryName = ""
+            showingAddSubcategoryField = false
+            return
         }
         
-        // Create new subcategory
+        if let subcategory = findOrCreateSubcategory(named: trimmedName) {
+            subcategoryBudgets[trimmedName] = subcategory.budgetAmount
+            subcategoryTextInputs[trimmedName] = ""
+            subcategory.sortOrder = Int16(subcategoryNames.count)
+        }
+        
+        do {
+            try viewContext.save()
+        } catch {
+            print("Failed to add subcategory: \(error)")
+        }
+        
+        newSubcategoryName = ""
+        showingAddSubcategoryField = false
+    }
+    
+    private func findOrCreateSubcategory(named name: String) -> BudgetSubcategory? {
+        if let existing = category.subcategories?.first(where: {
+            guard let sub = $0 as? BudgetSubcategory else { return false }
+            return sub.name == name
+        }) as? BudgetSubcategory {
+            return existing
+        }
+        
         let subcategory = BudgetSubcategory(context: viewContext)
         subcategory.name = name
         subcategory.category = category
+        subcategory.budgetAmount = 0.0
         subcategory.createdDate = Date()
         subcategory.modifiedDate = Date()
-        
+        subcategory.sortOrder = Int16(subcategoryNames.count)
         return subcategory
     }
     
@@ -974,12 +1024,8 @@ struct BudgetItemDetailView: View {
     
     @State private var name: String = ""
     @State private var amount: Double = 0.0
-    @State private var budgetAmount: Double = 0.0
     @State private var date: Date = Date()
     @State private var notes: String = ""
-    @State private var isIncome: Bool = false
-    @State private var isRecurring: Bool = false
-    @State private var recurringFrequency: String = "monthly"
     
     var body: some View {
         NavigationView {
@@ -987,8 +1033,6 @@ struct BudgetItemDetailView: View {
                 Section("Details") {
                     TextField("Item Name", text: $name)
                     TextField("Amount", value: $amount, format: .currency(code: "USD"))
-                        .keyboardType(.decimalPad)
-                    TextField("Budget Amount", value: $budgetAmount, format: .currency(code: "USD"))
                         .keyboardType(.decimalPad)
                     DatePicker("Date", selection: $date, displayedComponents: .date)
                 }
@@ -998,18 +1042,6 @@ struct BudgetItemDetailView: View {
                         .lineLimit(3...6)
                 }
                 
-                Section("Settings") {
-                    Toggle("Income", isOn: $isIncome)
-                    Toggle("Recurring", isOn: $isRecurring)
-                    
-                    if isRecurring {
-                        Picker("Frequency", selection: $recurringFrequency) {
-                            ForEach(RecurringFrequency.allCases, id: \.rawValue) { frequency in
-                                Text(frequency.displayName).tag(frequency.rawValue)
-                            }
-                        }
-                    }
-                }
             }
             .navigationTitle("Budget Item")
             .navigationBarTitleDisplayMode(.inline)
@@ -1033,12 +1065,8 @@ struct BudgetItemDetailView: View {
     private func loadItem() {
         name = item.name ?? ""
         amount = item.amount
-        budgetAmount = 0.0 // This property doesn't exist in Core Data model
         date = item.date ?? Date()
         notes = item.notes ?? ""
-        // isIncome = item.isIncome // Property doesn't exist in Core Data model
-        isRecurring = false // This property doesn't exist in Core Data model
-        recurringFrequency = "monthly"
     }
     
     private func saveItem() {
@@ -1046,7 +1074,6 @@ struct BudgetItemDetailView: View {
         item.amount = amount
         item.date = date
         item.notes = notes
-        // item.isIncome = isIncome // Property doesn't exist in Core Data model
         item.modifiedDate = Date()
         
         budgetManager.saveBudgetItem(item, with: viewContext)
@@ -1136,6 +1163,7 @@ struct CreateCategoryView: View {
                                 name: name,
                                 icon: selectedIcon,
                                 color: selectedColor,
+                                initialBudget: budget,
                                 with: viewContext
                             )
                             dismiss()
