@@ -944,7 +944,16 @@ struct TextEditorView: View {
             }
             .alert("Error", isPresented: $showingError) { Button("OK") {} } message: { Text(errorMessage) }
             .onAppear { startAutoSave() }
-            .onDisappear { stopAutoSave() }
+            .onDisappear { 
+                autoSaveTimer?.invalidate()
+                autoSaveTimer = nil
+                stopAutoSave()
+                
+                // Save any pending changes before leaving
+                if hasUnsavedChanges {
+                    saveNote()
+                }
+            }
         }
     }
 
@@ -1016,8 +1025,16 @@ struct TextEditorView: View {
         hasUnsavedChanges = true
         note.modifiedDate = Date()
         
-        // Create preview without image markers
-        if let content = note.content {
+        // Ensure content is captured from the editor with images preserved
+        if let coordinator = coordinatorRef, let textView = coordinator.textView {
+            let serialized = coordinator.serializeContent(from: textView.attributedText)
+            note.content = serialized
+            
+            // Create preview without image markers
+            let plain = MarkdownSerialization.plainText(from: serialized)
+            note.preview = String(plain.prefix(100))
+        } else if let content = note.content {
+            // Fallback if coordinator/textView not available
             let plain = MarkdownSerialization.plainText(from: content)
             note.preview = String(plain.prefix(100))
         }
@@ -1055,12 +1072,29 @@ struct TextEditorView: View {
         isSaving = true
         note.modifiedDate = Date()
         
+        // Content already updated in markAsChanged(), just save
         do {
             try viewContext.save()
             hasUnsavedChanges = false
-        } catch {
-            errorMessage = "Failed to save: \(error.localizedDescription)"
-            showingError = true
+        } catch let error as NSError {
+            // Handle specific Core Data errors
+            if error.domain == NSCocoaErrorDomain {
+                // Check for merge conflicts (error code 133020)
+                if error.code == 133020 || error.userInfo[NSPersistentStoreSaveConflictsErrorKey] != nil {
+                    // Retry save after merge
+                    try? viewContext.save()
+                } else if error.code >= 1610 && error.code <= 1620 {
+                    // Validation errors (1610-1620 range)
+                    errorMessage = "Invalid data: \(error.localizedDescription)"
+                    showingError = true
+                } else {
+                    errorMessage = "Save failed: \(error.localizedDescription)"
+                    showingError = true
+                }
+            } else {
+                errorMessage = "Failed to save: \(error.localizedDescription)"
+                showingError = true
+            }
         }
         isSaving = false
     }
@@ -1209,17 +1243,24 @@ struct NewNoteView: View {
         guard !title.isEmpty || !content.isEmpty else { dismiss(); return }
 
         isSaving = true
+        
+        // Capture current content with images from the editor
+        var finalContent = content
+        if let coordinator = coordinatorRef, let textView = coordinator.textView {
+            finalContent = coordinator.serializeContent(from: textView.attributedText)
+        }
+        
         let newNote = Notes(context: viewContext)
         newNote.id = UUID()  // Required for CloudKit sync
         newNote.title = title.isEmpty ? "Untitled" : title
-        newNote.content = content
+        newNote.content = finalContent
         newNote.project = project ?? selectedProject
         newNote.isMarkedDeleted = false
         newNote.createdDate = Date()
         newNote.modifiedDate = Date()
         
         // Create preview without image markers
-        let plain = MarkdownSerialization.plainText(from: content)
+        let plain = MarkdownSerialization.plainText(from: finalContent)
         newNote.preview = String(plain.prefix(100))
 
         viewContext.insert(newNote)

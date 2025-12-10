@@ -110,13 +110,16 @@ struct MarkdownSerialization {
         let mutable = attributed as? NSMutableAttributedString ?? NSMutableAttributedString(attributedString: attributed)
         ensureImageMetadata(in: mutable)
         
-        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: mutable, requiringSecureCoding: false) else {
+        do {
+            let data = try NSKeyedArchiver.archivedData(withRootObject: mutable, requiringSecureCoding: false)
+            let encoded = data.base64EncodedString()
+            let plain = plainTextRepresentation(of: mutable)
+            return attrPrefix + encoded + attrSuffix + plain
+        } catch {
+            print("⚠️ Serialization failed: \(error.localizedDescription)")
+            // Fallback to plain text
             return plainTextRepresentation(of: mutable)
         }
-        
-        let encoded = data.base64EncodedString()
-        let plain = plainTextRepresentation(of: mutable)
-        return attrPrefix + encoded + attrSuffix + plain
     }
     
     static func deserialize(_ text: String, maxWidth: CGFloat) -> (NSAttributedString, String)? {
@@ -126,7 +129,10 @@ struct MarkdownSerialization {
         
         let base64 = components.base64
         let plainText = components.plainText
-        guard let data = Data(base64Encoded: base64) else { return nil }
+        guard let data = Data(base64Encoded: base64) else {
+            print("⚠️ Invalid base64 data")
+            return nil
+        }
         
         let allowedClasses: [AnyClass] = [
             NSAttributedString.self,
@@ -146,13 +152,19 @@ struct MarkdownSerialization {
             NSShadow.self
         ]
         
-        guard let attributed = try? NSKeyedUnarchiver.unarchivedObject(ofClasses: allowedClasses, from: data) as? NSAttributedString else {
+        do {
+            guard let attributed = try NSKeyedUnarchiver.unarchivedObject(ofClasses: allowedClasses, from: data) as? NSAttributedString else {
+                print("⚠️ Failed to unarchive attributed string")
+                return nil
+            }
+            
+            let mutable = NSMutableAttributedString(attributedString: attributed)
+            ensureImageMetadata(in: mutable, maxWidth: maxWidth)
+            return (mutable, plainText)
+        } catch {
+            print("⚠️ Deserialization failed: \(error.localizedDescription)")
             return nil
         }
-        
-        let mutable = NSMutableAttributedString(attributedString: attributed)
-        ensureImageMetadata(in: mutable, maxWidth: maxWidth)
-        return (mutable, plainText)
     }
     
     static func plainText(from serialized: String) -> String {
@@ -185,8 +197,11 @@ struct MarkdownSerialization {
             }
             
             if targetWidth > 0, let image = attachment.image ?? attachment.image(forBounds: attachment.bounds, textContainer: nil, characterIndex: 0) {
-                let aspect = image.size.height / max(image.size.width, 1)
-                attachment.bounds = CGRect(x: 0, y: 0, width: targetWidth, height: targetWidth * aspect)
+                guard image.size.width > 0 && image.size.height >= 0 else { return }
+                let aspect = image.size.height / image.size.width
+                let finalHeight = targetWidth * aspect
+                guard finalHeight.isFinite && finalHeight > 0 else { return }
+                attachment.bounds = CGRect(x: 0, y: 0, width: targetWidth, height: finalHeight)
             }
         }
     }
@@ -394,8 +409,7 @@ struct MarkdownEditor: UIViewRepresentable {
         private var saveWorkItem: DispatchWorkItem?
         private var styleCalculationWorkItem: DispatchWorkItem?
         private var imageCache = [Data: String]()
-        private let imageCacheLock = NSLock()
-        private let serializationQueue = DispatchQueue(label: "co.inkslate.markdownEditor.serialization", qos: .userInitiated)
+        private let imageCacheQueue = DispatchQueue(label: "co.inkslate.imageCache", qos: .userInitiated)
         
         fileprivate var typingModes = Set<MarkdownAction>()
 
@@ -405,6 +419,18 @@ struct MarkdownEditor: UIViewRepresentable {
             saveWorkItem?.cancel()
             styleCalculationWorkItem?.cancel()
             fontCache.removeAll()
+            
+            // Clear active coordinator reference
+            MarkdownEditor.activeCoordinator = nil
+            
+            // Post final update to clear UI state
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .editorActiveStylesDidChange,
+                    object: nil,
+                    userInfo: ["styles": Set<MarkdownAction>()]
+                )
+            }
         }
 
         // MARK: Serialization (save images as base64)
@@ -415,9 +441,9 @@ struct MarkdownEditor: UIViewRepresentable {
             
             mutable.enumerateAttribute(.imageData, in: NSRange(location: 0, length: mutable.length), options: []) { value, _, _ in
                 if let encoded = value as? String, let data = Data(base64Encoded: encoded) {
-                    imageCacheLock.lock()
-                    imageCache[data] = encoded
-                    imageCacheLock.unlock()
+                    imageCacheQueue.async { [weak self] in
+                        self?.imageCache[data] = encoded
+                    }
                 }
             }
             return serialized
@@ -428,9 +454,9 @@ struct MarkdownEditor: UIViewRepresentable {
             if let (attr, _) = MarkdownSerialization.deserialize(text, maxWidth: availableWidth) {
                 attr.enumerateAttribute(.imageData, in: NSRange(location: 0, length: attr.length), options: []) { value, _, _ in
                     if let encoded = value as? String, let data = Data(base64Encoded: encoded) {
-                            imageCacheLock.lock()
-                            imageCache[data] = encoded
-                            imageCacheLock.unlock()
+                        imageCacheQueue.async { [weak self] in
+                            self?.imageCache[data] = encoded
+                        }
                     }
                 }
                 return attr
@@ -438,9 +464,9 @@ struct MarkdownEditor: UIViewRepresentable {
             let fallback = EditorContentParser.deserialize(text, maxWidth: availableWidth)
             fallback.enumerateAttribute(.imageData, in: NSRange(location: 0, length: fallback.length), options: []) { value, _, _ in
                 if let encoded = value as? String, let data = Data(base64Encoded: encoded) {
-                        imageCacheLock.lock()
-                        imageCache[data] = encoded
-                        imageCacheLock.unlock()
+                    imageCacheQueue.async { [weak self] in
+                        self?.imageCache[data] = encoded
+                    }
                 }
             }
             return fallback
@@ -453,7 +479,10 @@ struct MarkdownEditor: UIViewRepresentable {
             saveWorkItem?.cancel()
 
             let updateParent: () -> Void = { [weak self] in
-                self?.serializeAndPublishContent(from: textView.attributedText)
+                guard let self = self else { return }
+                // Serialize synchronously on main thread
+                let serialized = self.serializeContent(from: textView.attributedText)
+                self.parent.text = serialized
             }
 
             if textView.undoManager?.isUndoing == true || textView.undoManager?.isRedoing == true {
@@ -528,7 +557,11 @@ struct MarkdownEditor: UIViewRepresentable {
             switch action {
             case .undo:
                 tv.undoManager?.undo()
-                serializeAndPublishContent(from: tv.attributedText)
+                // Recalculate typing modes based on current cursor position
+                typingModes.removeAll()
+                applyTypingAttributes(in: tv)
+                // Direct serialization instead of serializeAndPublishContent
+                parent.text = serializeContent(from: tv.attributedText)
                 parent.selectedRange = tv.selectedRange
                 NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                 object: nil,
@@ -536,7 +569,11 @@ struct MarkdownEditor: UIViewRepresentable {
                 return
             case .redo:
                 tv.undoManager?.redo()
-                serializeAndPublishContent(from: tv.attributedText)
+                // Recalculate typing modes based on current cursor position
+                typingModes.removeAll()
+                applyTypingAttributes(in: tv)
+                // Direct serialization instead of serializeAndPublishContent
+                parent.text = serializeContent(from: tv.attributedText)
                 parent.selectedRange = tv.selectedRange
                 NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                 object: nil,
@@ -544,7 +581,8 @@ struct MarkdownEditor: UIViewRepresentable {
                 return
             case .imageToggleCompact:
                 if WysiwygActionHandler.toggleImageSize(in: tv) {
-                    serializeAndPublishContent(from: tv.attributedText)
+                    // Direct serialization instead of serializeAndPublishContent
+                    parent.text = serializeContent(from: tv.attributedText)
                     parent.selectedRange = tv.selectedRange
                     NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                     object: nil,
@@ -560,14 +598,16 @@ struct MarkdownEditor: UIViewRepresentable {
             }
 
             isProgrammaticChange = true
+            defer { isProgrammaticChange = false }  // Ensures cleanup even if error occurs
+            
             tv.undoManager?.beginUndoGrouping()
             
             WysiwygActionHandler.apply(action, to: tv)
             
             tv.undoManager?.endUndoGrouping()
-                isProgrammaticChange = false
 
-            serializeAndPublishContent(from: tv.attributedText)
+            // Direct serialization instead of serializeAndPublishContent
+            parent.text = serializeContent(from: tv.attributedText)
             parent.selectedRange = tv.selectedRange
             NotificationCenter.default.post(name: .editorActiveStylesDidChange, object: nil,
                                             userInfo: ["styles": currentActiveStyles(in: tv)])
@@ -614,7 +654,11 @@ struct MarkdownEditor: UIViewRepresentable {
                 }
                 textView.undoManager?.endUndoGrouping()
             })
-            currentTopVC()?.present(alert, animated: true)
+            guard let topVC = currentTopVC() else {
+                print("Warning: Unable to present alert - no view controller available")
+                return
+            }
+            topVC.present(alert, animated: true)
         }
 
         // MARK: Image picker
@@ -668,7 +712,15 @@ struct MarkdownEditor: UIViewRepresentable {
             applyTypingAttributes(in: tv)
         }
 
-        private var fontCache: [String: UIFont] = [:]
+        private var fontCache: [String: UIFont] = [:] {
+            didSet {
+                // Limit cache size to prevent unbounded growth
+                if fontCache.count > 50 {
+                    // Remove half the cache using LRU would be ideal, but simple clear works
+                    fontCache.removeAll()
+                }
+            }
+        }
         
         fileprivate func applyTypingAttributes(in tv: UITextView) {
             var attrs = tv.typingAttributes
@@ -710,18 +762,6 @@ struct MarkdownEditor: UIViewRepresentable {
             tv.typingAttributes = attrs
         }
         
-        private func serializeAndPublishContent(from attributed: NSAttributedString) {
-            let snapshot = NSMutableAttributedString(attributedString: attributed)
-            serializationQueue.async { [weak self] in
-                guard let self = self else { return }
-                let serialized = PerformanceLogger.measure(log: PerformanceMetrics.serialization, name: "SerializeNote") {
-                    self.serializeContent(from: snapshot)
-                }
-                DispatchQueue.main.async {
-                    self.parent.text = serialized
-                }
-            }
-        }
 
         fileprivate func currentActiveStyles(in tv: UITextView) -> Set<MarkdownAction> {
             var set = typingModes
@@ -793,10 +833,15 @@ final class EditorTextView: UITextView {
         textStorage.endEditing()
     }
 
+    private static var hasRegisteredMenuItems = false
+    
     func registerLinkMenuItems() {
         if #available(iOS 16.0, *) {
             // System edit menu
         } else {
+            // Only register once to avoid repeatedly creating menu items
+            guard !Self.hasRegisteredMenuItems else { return }
+            Self.hasRegisteredMenuItems = true
             UIMenuController.shared.menuItems = [
                 UIMenuItem(title: "Edit Link", action: #selector(editLink)),
                 UIMenuItem(title: "Remove Link", action: #selector(removeLink))
@@ -826,47 +871,78 @@ final class EditorTextView: UITextView {
 // MARK: - WYSIWYG Action Handler
 
 class WysiwygActionHandler {
+    // Lazy static initialization with error handling
+    private static let blockquoteRegex: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(pattern: #"^>+\s"#)
+        } catch {
+            fatalError("Invalid regex pattern for blockquote: \(error)")
+        }
+    }()
+    
+    private static let bulletRegex: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(pattern: #"^(\s*)• "#)
+        } catch {
+            fatalError("Invalid regex pattern for bullet: \(error)")
+        }
+    }()
+    
+    private static let numberedRegex: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(pattern: #"^(\s*)(\d+)\. "#)
+        } catch {
+            fatalError("Invalid regex pattern for numbered list: \(error)")
+        }
+    }()
+    
     static func handleReturn(in textView: EditorTextView) -> Bool {
         let lineR = textView.currentLineRange()
         let ns = textView.attributedText.string as NSString
         let line = ns.substring(with: lineR)
 
         // Blockquote handling with nested levels
-        if let match = line.range(of: #"^>+\s"#, options: .regularExpression) {
-            let prefix = String(line[match])
-            let content = String(line.dropFirst(prefix.count))
-            if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let m = NSMutableAttributedString(attributedString: textView.attributedText)
-                m.replaceCharacters(in: lineR, with: "")
-                textView.setAttributedStringUndoSafe(m)
-                textView.selectedRange = NSRange(location: lineR.location, length: 0)
-                return true
-            } else {
-                textView.insertText("\n\(prefix)")
-                return true
+        if let match = Self.blockquoteRegex.firstMatch(in: line, range: NSRange(location: 0, length: line.count)) {
+            let matchRange = match.range
+            if let range = Range(matchRange, in: line) {
+                let prefix = String(line[range])
+                let content = String(line.dropFirst(prefix.count))
+                if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let m = NSMutableAttributedString(attributedString: textView.attributedText)
+                    m.replaceCharacters(in: lineR, with: "")
+                    textView.setAttributedStringUndoSafe(m)
+                    textView.selectedRange = NSRange(location: lineR.location, length: 0)
+                    return true
+                } else {
+                    textView.insertText("\n\(prefix)")
+                    return true
+                }
             }
         }
 
         // Check for indented bullets (with leading spaces)
-        if let match = line.range(of: #"^(\s*)• "#, options: .regularExpression) {
-            let indent = String(line[match]).dropLast(2) // Remove "• "
-            let afterBullet = String(line.dropFirst(indent.count + 2))
-            if afterBullet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let m = NSMutableAttributedString(attributedString: textView.attributedText)
-                m.replaceCharacters(in: lineR, with: "")
-                textView.setAttributedStringUndoSafe(m)
-                textView.selectedRange = NSRange(location: lineR.location, length: 0)
-                return true
-            } else {
-                textView.insertText("\n\(indent)• ")
-                return true
+        if let match = Self.bulletRegex.firstMatch(in: line, range: NSRange(location: 0, length: line.count)) {
+            let matchRange = match.range
+            if let range = Range(matchRange, in: line) {
+                let indent = String(line[range]).dropLast(2) // Remove "• "
+                let afterBullet = String(line.dropFirst(indent.count + 2))
+                if afterBullet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let m = NSMutableAttributedString(attributedString: textView.attributedText)
+                    m.replaceCharacters(in: lineR, with: "")
+                    textView.setAttributedStringUndoSafe(m)
+                    textView.selectedRange = NSRange(location: lineR.location, length: 0)
+                    return true
+                } else {
+                    textView.insertText("\n\(indent)• ")
+                    return true
+                }
             }
         }
 
         // Numbered list
-        if let match = line.range(of: #"^(\s*)(\d+)\. "#, options: .regularExpression) {
+        if let match = Self.numberedRegex.firstMatch(in: line, range: NSRange(location: 0, length: line.count)) {
             let nsLine = line as NSString
-            let matchRange = NSRange(match, in: line)
+            let matchRange = match.range
             let prefix = nsLine.substring(with: matchRange)
             
             // Extract indent and number
@@ -1183,17 +1259,21 @@ class WysiwygActionHandler {
 
     // MARK: Images
 
-    static func toggleImageSize(in tv: UITextView) -> Bool {
+        static func toggleImageSize(in tv: UITextView) -> Bool {
         guard tv.attributedText.length > 0 else { return false }
         let selection = tv.selectedRange
         var effectiveRange = NSRange(location: 0, length: 0)
         let candidateIndices: [Int] = {
+            guard tv.attributedText.length > 0 else { return [] }
             var indices = [selection.location]
-            if selection.length > 0 { indices.append(selection.location + selection.length - 1) }
+            if selection.length > 0 {
+                let endIndex = min(selection.location + selection.length - 1, tv.attributedText.length - 1)
+                if endIndex >= 0 { indices.append(endIndex) }
+            }
             if selection.location > 0 { indices.append(selection.location - 1) }
             return indices.compactMap {
-                guard tv.attributedText.length > 0 else { return nil }
-                return max(0, min($0, tv.attributedText.length - 1))
+                let safeIndex = max(0, min($0, tv.attributedText.length - 1))
+                return safeIndex < tv.attributedText.length ? safeIndex : nil
             }
         }()
         
