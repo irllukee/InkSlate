@@ -338,6 +338,9 @@ struct WantToWatchMainView: View {
     
     private func addToWantToWatch(_ item: TMDBItem) {
         let newItem = WantToWatchItem(context: viewContext)
+        newItem.id = UUID()  // Required for CloudKit sync
+        newItem.createdDate = Date()
+        newItem.modifiedDate = Date()
         newItem.tmdbId = Int32(item.id)
         newItem.title = item.displayTitle
         newItem.overview = item.overview
@@ -355,6 +358,7 @@ struct WantToWatchMainView: View {
             searchText = ""
             searchResults = []
         } catch {
+            print("Failed to add item to watch list: \(error)")
         }
     }
 }
@@ -711,6 +715,7 @@ struct WantToWatchItemCard: View {
             do {
                 try viewContext.save()
             } catch {
+                print("Failed to toggle watched status: \(error)")
             }
         }
     }
@@ -938,6 +943,9 @@ struct ItemDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
     @State private var isPressed = false
+    @State private var fullDetails: TMDBFullDetails?
+    @State private var isLoadingDetails = false
+    @State private var loadError: String?
     
     var body: some View {
         NavigationView {
@@ -983,48 +991,101 @@ struct ItemDetailView: View {
                                 .foregroundColor(DesignSystem.Colors.textPrimary)
                                 .multilineTextAlignment(.center)
                             
-                            HStack(spacing: DesignSystem.Spacing.lg) {
+                            // Tagline
+                            if let tagline = fullDetails?.tagline, !tagline.isEmpty {
+                                Text("\"\(tagline)\"")
+                                    .font(DesignSystem.Typography.callout)
+                                    .italic()
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            
+                            // Info Row
+                            HStack(spacing: DesignSystem.Spacing.md) {
                                 if item.rating > 0 {
                                     HStack(spacing: 4) {
                                         Image(systemName: "star.fill")
-                                            .font(.system(size: 14, weight: .bold))
+                                            .font(.system(size: 12, weight: .bold))
                                             .foregroundColor(DesignSystem.Colors.warning)
                                         Text(String(format: "%.1f", item.rating))
-                                            .font(DesignSystem.Typography.headline)
+                                            .font(DesignSystem.Typography.callout)
                                             .fontWeight(.bold)
                                             .foregroundColor(DesignSystem.Colors.warning)
                                     }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
                                     .background(DesignSystem.Colors.warning.opacity(0.1))
-                                    .cornerRadius(12)
+                                    .cornerRadius(10)
+                                }
+                                
+                                if let runtime = fullDetails?.runtime, runtime > 0 {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "clock")
+                                            .font(.system(size: 12, weight: .medium))
+                                        Text(formatRuntime(runtime))
+                                            .font(DesignSystem.Typography.callout)
+                                            .fontWeight(.medium)
+                                    }
+                                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(DesignSystem.Colors.backgroundSecondary)
+                                    .cornerRadius(10)
                                 }
                                 
                                 if let releaseDate = item.releaseDate {
-                                    Text(formatDate(releaseDate))
+                                    Text(formatYear(releaseDate))
                                         .font(DesignSystem.Typography.callout)
                                         .fontWeight(.medium)
                                         .foregroundColor(DesignSystem.Colors.textSecondary)
-                                        .padding(.horizontal, 12)
-                                        .padding(.vertical, 6)
-                                        .background(DesignSystem.Colors.textSecondary.opacity(0.1))
-                                        .cornerRadius(12)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(DesignSystem.Colors.backgroundSecondary)
+                                        .cornerRadius(10)
+                                }
+                            }
+                            
+                            // TV Show Info
+                            if !item.isMovie, let seasons = fullDetails?.numberOfSeasons, let episodes = fullDetails?.numberOfEpisodes {
+                                HStack(spacing: DesignSystem.Spacing.md) {
+                                    Label("\(seasons) Season\(seasons == 1 ? "" : "s")", systemImage: "tv")
+                                    Label("\(episodes) Episodes", systemImage: "play.rectangle.on.rectangle")
+                                }
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                            }
+                            
+                            // Genres
+                            if let genres = fullDetails?.genres, !genres.isEmpty {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        ForEach(genres.prefix(4)) { genre in
+                                            Text(genre.name)
+                                                .font(DesignSystem.Typography.caption)
+                                                .fontWeight(.medium)
+                                                .foregroundColor(DesignSystem.Colors.info)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 5)
+                                                .background(DesignSystem.Colors.info.opacity(0.1))
+                                                .cornerRadius(8)
+                                        }
+                                    }
                                 }
                             }
                             
                             // Status Badge
                             HStack(spacing: 6) {
                                 Image(systemName: item.isWatched ? "checkmark.circle.fill" : "clock.fill")
-                                    .font(.system(size: 16, weight: .semibold))
+                                    .font(.system(size: 14, weight: .semibold))
                                 Text(item.isWatched ? "Watched" : "Up Next")
-                                    .font(DesignSystem.Typography.headline)
+                                    .font(DesignSystem.Typography.callout)
                                     .fontWeight(.semibold)
                             }
                             .foregroundColor(item.isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.info)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
                             .background((item.isWatched ? DesignSystem.Colors.success : DesignSystem.Colors.info).opacity(0.1))
-                            .cornerRadius(16)
+                            .cornerRadius(12)
                         }
                     }
                     .padding(DesignSystem.Spacing.lg)
@@ -1034,6 +1095,74 @@ struct ItemDetailView: View {
                             .shadow(color: DesignSystem.Shadows.small, radius: 4, x: 0, y: 2)
                     )
                     .padding(.horizontal, DesignSystem.Spacing.lg)
+                    
+                    // Cast Section
+                    if let cast = fullDetails?.cast, !cast.isEmpty {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                            Text("Cast")
+                                .font(DesignSystem.Typography.title2)
+                                .fontWeight(.bold)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                                .padding(.horizontal, DesignSystem.Spacing.lg)
+                            
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: DesignSystem.Spacing.md) {
+                                    ForEach(cast) { actor in
+                                        CastMemberCard(actor: actor)
+                                    }
+                                }
+                                .padding(.horizontal, DesignSystem.Spacing.lg)
+                            }
+                        }
+                    }
+                    
+                    // Director/Creator Section
+                    if let directors = fullDetails?.directors, !directors.isEmpty {
+                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
+                            Text(item.isMovie ? "Director" : "Created By")
+                                .font(DesignSystem.Typography.title2)
+                                .fontWeight(.bold)
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                            
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(directors) { person in
+                                    HStack(spacing: 12) {
+                                        AsyncImage(url: person.profileURL) { image in
+                                            image
+                                                .resizable()
+                                                .aspectRatio(contentMode: .fill)
+                                        } placeholder: {
+                                            Circle()
+                                                .fill(DesignSystem.Colors.backgroundSecondary)
+                                                .overlay(
+                                                    Image(systemName: "person.fill")
+                                                        .foregroundColor(DesignSystem.Colors.textTertiary)
+                                                )
+                                        }
+                                        .frame(width: 40, height: 40)
+                                        .clipShape(Circle())
+                                        
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(person.name)
+                                                .font(DesignSystem.Typography.body)
+                                                .fontWeight(.medium)
+                                                .foregroundColor(DesignSystem.Colors.textPrimary)
+                                            Text(person.job)
+                                                .font(DesignSystem.Typography.caption)
+                                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(DesignSystem.Spacing.lg)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(DesignSystem.Colors.surface)
+                                .shadow(color: DesignSystem.Shadows.small, radius: 4, x: 0, y: 2)
+                        )
+                        .padding(.horizontal, DesignSystem.Spacing.lg)
+                    }
                     
                     // Overview Section
                     if let overview = item.overview, !overview.isEmpty {
@@ -1055,6 +1184,17 @@ struct ItemDetailView: View {
                                 .shadow(color: DesignSystem.Shadows.small, radius: 4, x: 0, y: 2)
                         )
                         .padding(.horizontal, DesignSystem.Spacing.lg)
+                    }
+                    
+                    // Loading indicator for details
+                    if isLoadingDetails {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Loading details...")
+                                .font(DesignSystem.Typography.caption)
+                                .foregroundColor(DesignSystem.Colors.textSecondary)
+                        }
+                        .padding()
                     }
                     
                     // Action Buttons
@@ -1100,6 +1240,9 @@ struct ItemDetailView: View {
                     .foregroundColor(DesignSystem.Colors.info)
                 }
             }
+            .task {
+                await loadFullDetails()
+            }
         }
     }
     
@@ -1112,6 +1255,42 @@ struct ItemDetailView: View {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         return formatter.string(from: date)
+    }
+    
+    private func formatYear(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy"
+        return formatter.string(from: date)
+    }
+    
+    private func formatRuntime(_ minutes: Int) -> String {
+        let hours = minutes / 60
+        let mins = minutes % 60
+        if hours > 0 {
+            return "\(hours)h \(mins)m"
+        }
+        return "\(mins)m"
+    }
+    
+    private func loadFullDetails() async {
+        guard fullDetails == nil else { return }
+        isLoadingDetails = true
+        
+        do {
+            let details = try await TMDBService.shared.fetchFullDetails(
+                id: Int(item.tmdbId),
+                isMovie: item.isMovie
+            )
+            await MainActor.run {
+                fullDetails = details
+                isLoadingDetails = false
+            }
+        } catch {
+            await MainActor.run {
+                loadError = error.localizedDescription
+                isLoadingDetails = false
+            }
+        }
     }
     
     private func toggleWatchedStatus() {
@@ -1130,6 +1309,50 @@ struct ItemDetailView: View {
             try viewContext.save()
         } catch {
             print("Error toggling watched status: \(error)")
+        }
+    }
+}
+
+// MARK: - Cast Member Card
+struct CastMemberCard: View {
+    let actor: TMDBCastMember
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            AsyncImage(url: actor.profileURL) { image in
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                Rectangle()
+                    .fill(DesignSystem.Colors.backgroundSecondary)
+                    .overlay(
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(DesignSystem.Colors.textTertiary)
+                    )
+            }
+            .frame(width: 80, height: 100)
+            .cornerRadius(10)
+            .clipped()
+            
+            VStack(spacing: 2) {
+                Text(actor.name)
+                    .font(DesignSystem.Typography.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                
+                if let character = actor.character, !character.isEmpty {
+                    Text(character)
+                        .font(.system(size: 10))
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .frame(width: 80)
         }
     }
 }

@@ -349,3 +349,86 @@ extension MindMapNode {
         return Int(ring)
     }
 }
+
+// MARK: - CloudKit Sync Helpers
+/// Protocol for entities that need CloudKit sync metadata
+protocol CloudKitSyncable {
+    var id: UUID? { get set }
+    var createdDate: Date? { get set }
+    var modifiedDate: Date? { get set }
+}
+
+/// Extension to ensure entities have proper sync metadata before saving
+extension NSManagedObject {
+    /// Ensures the entity has proper CloudKit sync metadata
+    func ensureCloudKitMetadata() {
+        // Check and set id if available
+        if responds(to: Selector(("id"))) {
+            if value(forKey: "id") == nil {
+                setValue(UUID(), forKey: "id")
+            }
+        }
+        
+        // Check and set createdDate if available
+        if responds(to: Selector(("createdDate"))) {
+            if value(forKey: "createdDate") == nil {
+                setValue(Date(), forKey: "createdDate")
+            }
+        }
+        
+        // Update modifiedDate if available
+        if responds(to: Selector(("modifiedDate"))) {
+            setValue(Date(), forKey: "modifiedDate")
+        }
+    }
+}
+
+// MARK: - MindMap CloudKit Helpers
+extension MindMap {
+    /// Initializes with proper CloudKit metadata
+    func initializeForCloudKit() {
+        if id == nil { id = UUID() }
+        if createdDate == nil { createdDate = Date() }
+        modifiedDate = Date()
+    }
+}
+
+extension MindMapNode {
+    /// Initializes with proper CloudKit metadata
+    func initializeForCloudKit() {
+        if id == nil { id = UUID() }
+        if createdDate == nil { createdDate = Date() }
+        modifiedDate = Date()
+    }
+}
+
+// MARK: - Context Save Helper
+extension NSManagedObjectContext {
+    /// Saves the context with proper error handling and CloudKit metadata validation
+    func saveWithCloudKitSync() throws {
+        // Ensure all inserted objects have proper metadata
+        for object in insertedObjects {
+            object.ensureCloudKitMetadata()
+        }
+        
+        // Ensure all updated objects have updated modifiedDate
+        for object in updatedObjects {
+            if object.responds(to: Selector(("modifiedDate"))) {
+                object.setValue(Date(), forKey: "modifiedDate")
+            }
+        }
+        
+        guard hasChanges else { return }
+        try save()
+    }
+    
+    /// Saves silently without throwing, logs errors
+    func saveQuietly() {
+        guard hasChanges else { return }
+        do {
+            try save()
+        } catch {
+            print("❌ Core Data save error: \(error)")
+        }
+    }
+}

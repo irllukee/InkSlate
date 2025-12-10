@@ -130,14 +130,14 @@ class NotesService: ObservableObject {
     func searchNotes(_ notes: [Notes], searchText: String) -> [Notes] {
         guard !searchText.isEmpty else { return notes }
         
-        let searchLower = searchText.lowercased()
-        
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return notes }
         
         return notes.filter { note in
-            (note.title?.lowercased().contains(searchLower) ?? false) ||
-            (note.content?.lowercased().contains(searchLower) ?? false) ||
-            (note.preview?.lowercased().contains(searchLower) ?? false) ||
-            (note.tags?.contains { $0.lowercased().contains(searchLower) } ?? false)
+            (note.title?.localizedCaseInsensitiveContains(trimmed) ?? false) ||
+            (note.content?.localizedCaseInsensitiveContains(trimmed) ?? false) ||
+            (note.preview?.localizedCaseInsensitiveContains(trimmed) ?? false) ||
+            (note.tags?.components(separatedBy: ",").contains { $0.localizedCaseInsensitiveContains(trimmed) } ?? false)
         }
     }
     

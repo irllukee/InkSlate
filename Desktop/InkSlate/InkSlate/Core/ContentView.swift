@@ -9,7 +9,6 @@ import SwiftUI
 
 // MARK: - Main Content View
 struct ContentView: View {
-    @State private var isMenuOpen = false
     @State private var isHovering = false
     @State private var selectedView: MenuViewType = .items
     @EnvironmentObject var sharedStateManager: SharedStateManager
@@ -22,7 +21,7 @@ struct ContentView: View {
                     .toolbar(content: {
                         ToolbarItem(placement: .navigationBarLeading) {
                             HamburgerMenuButton(
-                                isMenuOpen: $isMenuOpen,
+                                isMenuOpen: $sharedStateManager.isMenuOpen,
                                 isHovering: $isHovering
                             )
                         }
@@ -30,11 +29,11 @@ struct ContentView: View {
                     })
             }
             .overlay(
-                MenuOverlay(isMenuOpen: $isMenuOpen)
+                MenuOverlay(isMenuOpen: $sharedStateManager.isMenuOpen)
             )
             .overlay(
                 SideMenu(
-                    isMenuOpen: $isMenuOpen,
+                    isMenuOpen: $sharedStateManager.isMenuOpen,
                     selectedView: $selectedView
                 )
             )

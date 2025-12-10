@@ -11,6 +11,7 @@ class DailyQuoteService: ObservableObject {
     @Published var isLoading = false
     
     private let userDefaults = UserDefaults.standard
+    private let cloudStore = NSUbiquitousKeyValueStore.default
     private let lastQuoteDateKey = "lastQuoteDate"
     private let currentQuoteIdKey = "currentQuoteId"
     
@@ -619,17 +620,49 @@ class DailyQuoteService: ObservableObject {
     ]
     
     init() {
+        setupCloudStoreObserver()
+        cloudStore.synchronize()
         loadDailyQuote()
     }
     
-    
     deinit {
-        
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    private func setupCloudStoreObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(cloudStoreDidChange),
+            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: cloudStore
+        )
+    }
+    
+    @objc private func cloudStoreDidChange(_ notification: Notification) {
+        DispatchQueue.main.async {
+            self.loadDailyQuote()
+        }
     }
     
     func loadDailyQuote() {
         let today = Calendar.current.startOfDay(for: Date())
-        let lastQuoteDate = userDefaults.object(forKey: lastQuoteDateKey) as? Date ?? Date.distantPast
+        
+        // Try to load from iCloud first, then fall back to local UserDefaults
+        var lastQuoteDate: Date
+        var quoteId: Int?
+        
+        // Check iCloud first
+        if let cloudDate = cloudStore.object(forKey: lastQuoteDateKey) as? Date {
+            lastQuoteDate = cloudDate
+            quoteId = cloudStore.object(forKey: currentQuoteIdKey) as? Int
+        } else if let localDate = userDefaults.object(forKey: lastQuoteDateKey) as? Date {
+            // Fall back to local and migrate to iCloud
+            lastQuoteDate = localDate
+            quoteId = userDefaults.object(forKey: currentQuoteIdKey) as? Int
+        } else {
+            lastQuoteDate = Date.distantPast
+        }
+        
         let lastQuoteDateStart = Calendar.current.startOfDay(for: lastQuoteDate)
         
         // If it's a new day, get a new quote
@@ -637,9 +670,8 @@ class DailyQuoteService: ObservableObject {
             selectNewQuote()
         } else {
             // Load the current quote from storage
-            if let quoteId = userDefaults.object(forKey: currentQuoteIdKey) as? Int,
-               quoteId < quotes.count {
-                currentQuote = quotes[quoteId]
+            if let id = quoteId, id < quotes.count {
+                currentQuote = quotes[id]
             } else {
                 // Fallback to first quote if no valid quote ID
                 currentQuote = quotes[0]
@@ -649,7 +681,9 @@ class DailyQuoteService: ObservableObject {
     
     private func selectNewQuote() {
         // Get a random quote that's different from yesterday's
-        let lastQuoteId = userDefaults.object(forKey: currentQuoteIdKey) as? Int ?? -1
+        let lastQuoteId = (cloudStore.object(forKey: currentQuoteIdKey) as? Int) 
+            ?? (userDefaults.object(forKey: currentQuoteIdKey) as? Int) 
+            ?? -1
         var newQuoteId: Int
         
         repeat {
@@ -658,9 +692,15 @@ class DailyQuoteService: ObservableObject {
         
         currentQuote = quotes[newQuoteId]
         
-        // Save the new quote and date
+        // Save to both iCloud and local UserDefaults
+        let now = Date()
+        cloudStore.set(newQuoteId, forKey: currentQuoteIdKey)
+        cloudStore.set(now, forKey: lastQuoteDateKey)
+        cloudStore.synchronize()
+        
+        // Also save locally as backup
         userDefaults.set(newQuoteId, forKey: currentQuoteIdKey)
-        userDefaults.set(Date(), forKey: lastQuoteDateKey)
+        userDefaults.set(now, forKey: lastQuoteDateKey)
     }
     
     func refreshQuote() {

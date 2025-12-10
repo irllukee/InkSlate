@@ -394,6 +394,8 @@ struct MarkdownEditor: UIViewRepresentable {
         private var saveWorkItem: DispatchWorkItem?
         private var styleCalculationWorkItem: DispatchWorkItem?
         private var imageCache = [Data: String]()
+        private let imageCacheLock = NSLock()
+        private let serializationQueue = DispatchQueue(label: "co.inkslate.markdownEditor.serialization", qos: .userInitiated)
         
         fileprivate var typingModes = Set<MarkdownAction>()
 
@@ -413,7 +415,9 @@ struct MarkdownEditor: UIViewRepresentable {
             
             mutable.enumerateAttribute(.imageData, in: NSRange(location: 0, length: mutable.length), options: []) { value, _, _ in
                 if let encoded = value as? String, let data = Data(base64Encoded: encoded) {
+                    imageCacheLock.lock()
                     imageCache[data] = encoded
+                    imageCacheLock.unlock()
                 }
             }
             return serialized
@@ -424,7 +428,9 @@ struct MarkdownEditor: UIViewRepresentable {
             if let (attr, _) = MarkdownSerialization.deserialize(text, maxWidth: availableWidth) {
                 attr.enumerateAttribute(.imageData, in: NSRange(location: 0, length: attr.length), options: []) { value, _, _ in
                     if let encoded = value as? String, let data = Data(base64Encoded: encoded) {
-                        imageCache[data] = encoded
+                            imageCacheLock.lock()
+                            imageCache[data] = encoded
+                            imageCacheLock.unlock()
                     }
                 }
                 return attr
@@ -432,7 +438,9 @@ struct MarkdownEditor: UIViewRepresentable {
             let fallback = EditorContentParser.deserialize(text, maxWidth: availableWidth)
             fallback.enumerateAttribute(.imageData, in: NSRange(location: 0, length: fallback.length), options: []) { value, _, _ in
                 if let encoded = value as? String, let data = Data(base64Encoded: encoded) {
-                    imageCache[data] = encoded
+                        imageCacheLock.lock()
+                        imageCache[data] = encoded
+                        imageCacheLock.unlock()
                 }
             }
             return fallback
@@ -445,8 +453,7 @@ struct MarkdownEditor: UIViewRepresentable {
             saveWorkItem?.cancel()
 
             let updateParent: () -> Void = { [weak self] in
-                guard let strongSelf = self else { return }
-                strongSelf.parent.text = strongSelf.serializeContent(from: textView.attributedText)
+                self?.serializeAndPublishContent(from: textView.attributedText)
             }
 
             if textView.undoManager?.isUndoing == true || textView.undoManager?.isRedoing == true {
@@ -521,7 +528,7 @@ struct MarkdownEditor: UIViewRepresentable {
             switch action {
             case .undo:
                 tv.undoManager?.undo()
-                parent.text = serializeContent(from: tv.attributedText)
+                serializeAndPublishContent(from: tv.attributedText)
                 parent.selectedRange = tv.selectedRange
                 NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                 object: nil,
@@ -529,7 +536,7 @@ struct MarkdownEditor: UIViewRepresentable {
                 return
             case .redo:
                 tv.undoManager?.redo()
-                parent.text = serializeContent(from: tv.attributedText)
+                serializeAndPublishContent(from: tv.attributedText)
                 parent.selectedRange = tv.selectedRange
                 NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                 object: nil,
@@ -537,7 +544,7 @@ struct MarkdownEditor: UIViewRepresentable {
                 return
             case .imageToggleCompact:
                 if WysiwygActionHandler.toggleImageSize(in: tv) {
-                    parent.text = serializeContent(from: tv.attributedText)
+                    serializeAndPublishContent(from: tv.attributedText)
                     parent.selectedRange = tv.selectedRange
                     NotificationCenter.default.post(name: .editorActiveStylesDidChange,
                                                     object: nil,
@@ -560,7 +567,7 @@ struct MarkdownEditor: UIViewRepresentable {
             tv.undoManager?.endUndoGrouping()
                 isProgrammaticChange = false
 
-            parent.text = serializeContent(from: tv.attributedText)
+            serializeAndPublishContent(from: tv.attributedText)
             parent.selectedRange = tv.selectedRange
             NotificationCenter.default.post(name: .editorActiveStylesDidChange, object: nil,
                                             userInfo: ["styles": currentActiveStyles(in: tv)])
@@ -702,6 +709,19 @@ struct MarkdownEditor: UIViewRepresentable {
 
             tv.typingAttributes = attrs
         }
+        
+        private func serializeAndPublishContent(from attributed: NSAttributedString) {
+            let snapshot = NSMutableAttributedString(attributedString: attributed)
+            serializationQueue.async { [weak self] in
+                guard let self = self else { return }
+                let serialized = PerformanceLogger.measure(log: PerformanceMetrics.serialization, name: "SerializeNote") {
+                    self.serializeContent(from: snapshot)
+                }
+                DispatchQueue.main.async {
+                    self.parent.text = serialized
+                }
+            }
+        }
 
         fileprivate func currentActiveStyles(in tv: UITextView) -> Set<MarkdownAction> {
             var set = typingModes
@@ -719,7 +739,8 @@ struct MarkdownEditor: UIViewRepresentable {
             let line = (tv as? EditorTextView)?.currentLineString() ?? ""
             if line.range(of: #"^\s*• "#, options: .regularExpression) != nil { set.insert(.bulletList) } else { set.remove(.bulletList) }
             if line.range(of: #"^\s*\d+\. "#, options: .regularExpression) != nil { set.insert(.numberedList) } else { set.remove(.numberedList) }
-            if line.hasPrefix("> ") { set.insert(.blockquote) } else { set.remove(.blockquote) }
+            // Match nested blockquotes (>, >>, >>>, etc.)
+            if line.range(of: #"^>+\s"#, options: .regularExpression) != nil { set.insert(.blockquote) } else { set.remove(.blockquote) }
 
             return set
         }
@@ -744,12 +765,19 @@ final class EditorTextView: UITextView {
         guard let r = currentLinkRange(),
               let url = attributedText.attribute(.link, at: r.location, effectiveRange: nil) as? URL else { return }
         let alert = UIAlertController(title: "Edit Link", message: nil, preferredStyle: .alert)
-        alert.addTextField { tf in tf.text = url.absoluteString }
+        alert.addTextField { tf in
+            tf.text = url.absoluteString
+            tf.keyboardType = .URL
+            tf.autocorrectionType = .no
+            tf.autocapitalizationType = .none
+        }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self] _ in
-            guard let strongSelf = self,
-                  let s = alert.textFields?.first?.text,
-                  let newURL = URL(string: s) else { return }
+            guard let strongSelf = self else { return }
+            var urlString = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // Auto-add https:// if no protocol specified
+            if !urlString.isEmpty && !urlString.contains("://") { urlString = "https://" + urlString }
+            guard !urlString.isEmpty, let newURL = URL(string: urlString), newURL.scheme != nil else { return }
             strongSelf.textStorage.beginEditing()
             strongSelf.textStorage.addAttribute(.link, value: newURL, range: r)
             strongSelf.textStorage.endEditing()
@@ -845,35 +873,22 @@ class WysiwygActionHandler {
             if let numMatch = prefix.range(of: #"\d+"#, options: .regularExpression) {
                 let numStr = String(prefix[numMatch])
                 let indent = String(prefix.prefix(while: { $0 == " " }))
-            let after = String(line.dropFirst(prefix.count))
+                let after = String(line.dropFirst(prefix.count))
                 
-            if after.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let m = NSMutableAttributedString(attributedString: textView.attributedText)
-                m.replaceCharacters(in: lineR, with: "")
-                textView.setAttributedStringUndoSafe(m)
-                textView.selectedRange = NSRange(location: lineR.location, length: 0)
-                return true
-            } else if let n = Int(numStr) {
+                if after.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let m = NSMutableAttributedString(attributedString: textView.attributedText)
+                    m.replaceCharacters(in: lineR, with: "")
+                    textView.setAttributedStringUndoSafe(m)
+                    textView.selectedRange = NSRange(location: lineR.location, length: 0)
+                    return true
+                } else if let n = Int(numStr) {
                     textView.insertText("\n\(indent)\(n + 1). ")
-                return true
+                    return true
                 }
             }
         }
 
-        // Blockquote
-        if line.hasPrefix("> ") {
-            let after = String(line.dropFirst(2))
-            if after.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let m = NSMutableAttributedString(attributedString: textView.attributedText)
-                m.replaceCharacters(in: lineR, with: "")
-                textView.setAttributedStringUndoSafe(m)
-                textView.selectedRange = NSRange(location: lineR.location, length: 0)
-                return true
-            } else {
-                textView.insertText("\n> ")
-                return true
-            }
-        }
+        // Note: Simple "> " blockquote is handled by the nested blockquote regex above (^>+\s)
         return false
     }
     
@@ -946,10 +961,28 @@ class WysiwygActionHandler {
         
         let lineR = (tv as? EditorTextView)?.currentLineRange() ?? tv.selectedRange
         let m = NSMutableAttributedString(attributedString: tv.attributedText)
+        
+        // Handle empty text or invalid range
+        guard m.length > 0, lineR.location < m.length else {
+            // For empty text, just set typing attributes for the header
+            var attrs = tv.typingAttributes
+            attrs[.font] = UIFont.systemFont(ofSize: sizes.0, weight: sizes.1)
+            let style = NSMutableParagraphStyle()
+            style.lineSpacing = 6
+            style.paragraphSpacingBefore = 8
+            style.paragraphSpacing = 8
+            attrs[.paragraphStyle] = style
+            tv.typingAttributes = attrs
+            return
+        }
+        
         let existingAttrs = m.attributes(at: lineR.location, effectiveRange: nil)
         var merged = existingAttrs
         merged[.font] = UIFont.systemFont(ofSize: sizes.0, weight: sizes.1)
-        let style = NSMutableParagraphStyle()
+        
+        // Preserve existing paragraph style properties and just update spacing
+        let existingStyle = existingAttrs[.paragraphStyle] as? NSParagraphStyle
+        let style = (existingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
         style.lineSpacing = 6
         style.paragraphSpacingBefore = 8
         style.paragraphSpacing = 8
@@ -972,6 +1005,9 @@ class WysiwygActionHandler {
         // Get current indent level
         let currentIndent = line.prefix(while: { $0 == " " })
         
+        // Track cursor adjustment
+        var newCursorLocation = range.location
+        
         switch action {
         case .bulletList:
             if line.range(of: #"^\s*• "#, options: .regularExpression) != nil {
@@ -980,10 +1016,15 @@ class WysiwygActionHandler {
                     let nsRange = NSRange(bulletRange, in: line)
                     m.replaceCharacters(in: NSRange(location: lineRange.location + nsRange.location, 
                                                    length: nsRange.length), with: "")
+                    // Adjust cursor - move back by the removed prefix length
+                    newCursorLocation = max(lineRange.location, range.location - nsRange.length)
                 }
             } else {
                 // Add bullet with current indent
-                m.insert(NSAttributedString(string: "\(currentIndent)• "), at: lineRange.location)
+                let prefix = "\(currentIndent)• "
+                m.insert(NSAttributedString(string: prefix), at: lineRange.location)
+                // Position cursor after the bullet point
+                newCursorLocation = lineRange.location + prefix.count
             }
             
         case .numberedList:
@@ -993,10 +1034,15 @@ class WysiwygActionHandler {
                     let nsRange = NSRange(numRange, in: line)
                     m.replaceCharacters(in: NSRange(location: lineRange.location + nsRange.location,
                                                    length: nsRange.length), with: "")
+                    // Adjust cursor - move back by the removed prefix length
+                    newCursorLocation = max(lineRange.location, range.location - nsRange.length)
                 }
             } else {
                 // Add number with current indent
-                m.insert(NSAttributedString(string: "\(currentIndent)1. "), at: lineRange.location)
+                let prefix = "\(currentIndent)1. "
+                m.insert(NSAttributedString(string: prefix), at: lineRange.location)
+                // Position cursor after the number
+                newCursorLocation = lineRange.location + prefix.count
             }
             
         case .blockquote:
@@ -1005,16 +1051,21 @@ class WysiwygActionHandler {
                 if let quoteRange = line.range(of: #"^>\s"#, options: .regularExpression) {
                     let nsRange = NSRange(quoteRange, in: line)
                     m.replaceCharacters(in: NSRange(location: lineRange.location + nsRange.location, length: nsRange.length), with: "")
+                    // Adjust cursor - move back by the removed prefix length
+                    newCursorLocation = max(lineRange.location, range.location - nsRange.length)
                 }
             } else {
-                m.insert(NSAttributedString(string: "> "), at: lineRange.location)
+                let prefix = "> "
+                m.insert(NSAttributedString(string: prefix), at: lineRange.location)
+                // Position cursor after the quote marker
+                newCursorLocation = lineRange.location + prefix.count
             }
             
         default: break
         }
         
         tv.setAttributedStringUndoSafe(m)
-        tv.selectedRange = NSRange(location: range.location, length: 0)
+        tv.selectedRange = NSRange(location: newCursorLocation, length: 0)
     }
 
     // MARK: Indent/Outdent with sub-bullets
@@ -1052,20 +1103,27 @@ class WysiwygActionHandler {
     private static func setTextAlignment(_ alignment: NSTextAlignment, in m: NSMutableAttributedString, range: NSRange) {
         let ns = m.string as NSString
         let paraRange = ns.paragraphRange(for: range)
-        let style = NSMutableParagraphStyle()
+        
+        // Get existing paragraph style or create new one
+        let existingStyle = m.attribute(.paragraphStyle, at: paraRange.location, effectiveRange: nil) as? NSParagraphStyle
+        let style = (existingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
         style.alignment = alignment
         m.addAttribute(.paragraphStyle, value: style, range: paraRange)
 
         if let tv = MarkdownEditor.activeCoordinator?.textView {
             var attrs = tv.typingAttributes
-            attrs[.paragraphStyle] = style
+            let existingTypingStyle = attrs[.paragraphStyle] as? NSParagraphStyle
+            let typingStyle = (existingTypingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            typingStyle.alignment = alignment
+            attrs[.paragraphStyle] = typingStyle
             tv.typingAttributes = attrs
         }
     }
     
     private static func setCaretAlignment(_ alignment: NSTextAlignment, in tv: UITextView) {
         var attrs = tv.typingAttributes
-        let style = NSMutableParagraphStyle()
+        let existingStyle = attrs[.paragraphStyle] as? NSParagraphStyle
+        let style = (existingStyle?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
         style.alignment = alignment
         attrs[.paragraphStyle] = style
         tv.typingAttributes = attrs

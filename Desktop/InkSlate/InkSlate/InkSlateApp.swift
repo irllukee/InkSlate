@@ -15,7 +15,9 @@ struct InkSlateApp: App {
     let persistenceController = PersistenceController.shared
     
     init() {
-        registerBackgroundTasks()
+        PerformanceLogger.measure(log: PerformanceMetrics.appLaunch, name: "AppInitialization") {
+            registerBackgroundTasks()
+        }
     }
     
     var body: some Scene {
@@ -24,11 +26,10 @@ struct InkSlateApp: App {
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
                 .environmentObject(SharedStateManager.shared)
                 .onAppear {
-                    // Run cleanup on app launch
-                    performCleanup()
-                    scheduleBackgroundCleanup()
-                    
-                    // Check CloudKit status
+                    PerformanceLogger.measure(log: PerformanceMetrics.appLaunch, name: "ContentViewOnAppear") {
+                        performCleanup()
+                        scheduleBackgroundCleanup()
+                    }
                     Task {
                         await checkCloudKitStatus()
                     }

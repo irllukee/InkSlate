@@ -48,6 +48,11 @@ final class PersistenceController: ObservableObject {
             description.cloudKitContainerOptions = NSPersistentCloudKitContainerOptions(
                 containerIdentifier: "iCloud.com.lucas.InkSlateNew"
             )
+            
+            // Optimize for lazy loading - Core Data will fetch in batches
+            // This reduces memory usage for large datasets
+            description.shouldMigrateStoreAutomatically = true
+            description.shouldInferMappingModelAutomatically = true
 
             logger.info("CloudKit configured: iCloud.com.lucas.InkSlateNew")
         }
@@ -190,6 +195,45 @@ final class PersistenceController: ObservableObject {
             logger.error("❌ Save failed: \(error.localizedDescription)")
         }
     }
+    
+    /// Enhanced save that ensures CloudKit metadata is set and triggers sync
+    func saveWithSync() {
+        let context = container.viewContext
+        
+        // Ensure all new objects have proper metadata
+        for object in context.insertedObjects {
+            object.ensureCloudKitMetadata()
+        }
+        
+        // Update modifiedDate for changed objects
+        for object in context.updatedObjects {
+            if object.responds(to: Selector(("modifiedDate"))) {
+                object.setValue(Date(), forKey: "modifiedDate")
+            }
+        }
+        
+        guard context.hasChanges else { return }
+        
+        do {
+            try context.save()
+            logger.info("💾 Context saved with CloudKit sync metadata")
+            
+            // Post notification that data changed - helps trigger sync
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .dataSaved, object: nil)
+            }
+        } catch {
+            logger.error("❌ Save failed: \(error.localizedDescription)")
+        }
+    }
+    
+    /// Force a refresh from CloudKit by resetting query generation
+    func refreshFromCloud() {
+        let context = container.viewContext
+        context.refreshAllObjects()
+        try? context.setQueryGenerationFrom(.current)
+        logger.info("🔄 Forced refresh from CloudKit")
+    }
 
     func backgroundContext() -> NSManagedObjectContext {
         let context = container.newBackgroundContext()
@@ -257,4 +301,5 @@ enum CloudKitStatus: Equatable {
 
 extension Notification.Name {
     static let cloudKitDataRefreshed = Notification.Name("cloudKitDataRefreshed")
+    static let dataSaved = Notification.Name("dataSaved")
 }

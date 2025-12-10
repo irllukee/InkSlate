@@ -117,6 +117,21 @@ struct SettingsView: View {
                 }
                 .foregroundColor(.red)
             }
+            
+            // Memorial
+            Section {
+                EmptyView()
+            } footer: {
+                VStack(spacing: 8) {
+                    Text("In loving memory of my Father")
+                        .font(.caption)
+                        .foregroundColor(DesignSystem.Colors.textTertiary)
+                    Text("🕊️")
+                        .font(.caption)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 20)
+            }
         }
         .navigationTitle("Settings")
         .sheet(isPresented: $showingMenuReorder) {
@@ -229,6 +244,11 @@ struct SettingsView: View {
                 viewContext.delete(place)
             }
             
+            // Delete all Place photos from CloudKit (stored separately)
+            Task {
+                try? await CloudKitAssetService.shared.deleteAllPlacePhotos()
+            }
+            
             // Delete all quotes
             let quoteRequest: NSFetchRequest<Quote> = Quote.fetchRequest()
             let quotes = try viewContext.fetch(quoteRequest)
@@ -275,6 +295,20 @@ struct SettingsView: View {
                 viewContext.delete(ingredient)
             }
             
+            // Delete all shopping list items
+            let shoppingItemRequest: NSFetchRequest<ShoppingItemEntity> = ShoppingItemEntity.fetchRequest()
+            let shoppingItems = try viewContext.fetch(shoppingItemRequest)
+            for item in shoppingItems {
+                viewContext.delete(item)
+            }
+            
+            // Delete all pantry items
+            let pantryItemRequest: NSFetchRequest<PantryItemEntity> = PantryItemEntity.fetchRequest()
+            let pantryItems = try viewContext.fetch(pantryItemRequest)
+            for item in pantryItems {
+                viewContext.delete(item)
+            }
+            
             // Save changes to Core Data
             try viewContext.save()
             
@@ -286,9 +320,9 @@ struct SettingsView: View {
                 "MenuOrder",
                 "HiddenMenuItems", 
                 "lastSyncDate",
+                "lastSelectedFolderID",
                 "profileUserName",
-                "profileUserIcon", 
-                "profileUserEmail",
+                "profileUserIcon",
                 "profileUserImage",
                 "lastQuoteDate",
                 "currentQuoteId"

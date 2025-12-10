@@ -17,28 +17,30 @@ struct ProfileMainView: View {
         VStack(spacing: DesignSystem.Spacing.xl) {
             // Profile Header
             VStack(spacing: DesignSystem.Spacing.lg) {
-                // Profile Image with custom icon
+                // Profile Image
                 ZStack {
                     Circle()
                         .fill(DesignSystem.Colors.accent.opacity(0.1))
                         .frame(width: 100, height: 100)
                     
-                    Image(systemName: profileService.userIcon)
-                        .font(.system(size: 60))
-                        .foregroundColor(DesignSystem.Colors.accent)
+                    if let userImage = profileService.userImage {
+                        Image(uiImage: userImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 100, height: 100)
+                            .clipShape(Circle())
+                    } else {
+                        Image(systemName: profileService.userIcon)
+                            .font(.system(size: 60))
+                            .foregroundColor(DesignSystem.Colors.accent)
+                    }
                 }
                 
                 // Profile Info
-                VStack(spacing: DesignSystem.Spacing.sm) {
-                    Text(profileService.userName)
-                        .font(DesignSystem.Typography.title1)
-                        .fontWeight(.semibold)
-                        .foregroundColor(DesignSystem.Colors.textPrimary)
-                    
-                    Text(profileService.userEmail)
-                        .font(DesignSystem.Typography.body)
-                        .foregroundColor(DesignSystem.Colors.textSecondary)
-                }
+                Text(profileService.userName)
+                    .font(DesignSystem.Typography.title1)
+                    .fontWeight(.semibold)
+                    .foregroundColor(DesignSystem.Colors.textPrimary)
             }
             
             // Profile Actions
@@ -173,7 +175,6 @@ struct ProfileCustomizationView: View {
     @ObservedObject var profileService: ProfileService
     
     @State private var tempUserName: String = ""
-    @State private var tempUserEmail: String = ""
     @State private var tempUserIcon: String = ""
     @State private var selectedImage: UIImage?
     @State private var showingImagePicker = false
@@ -224,15 +225,9 @@ struct ProfileCustomizationView: View {
                             }
                             
                             // Profile Info Preview
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(tempUserName.isEmpty ? profileService.userName : tempUserName)
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(DesignSystem.Colors.textPrimary)
-                                
-                                Text(tempUserEmail.isEmpty ? profileService.userEmail : tempUserEmail)
-                                    .font(.system(size: 14, weight: .regular))
-                                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                            }
+                            Text(tempUserName.isEmpty ? profileService.userName : tempUserName)
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(DesignSystem.Colors.textPrimary)
                             
                             Spacer()
                         }
@@ -254,22 +249,6 @@ struct ProfileCustomizationView: View {
                                 .foregroundColor(DesignSystem.Colors.textPrimary)
                             
                             TextField("Enter your name", text: $tempUserName)
-                                .font(DesignSystem.Typography.body)
-                                .padding(DesignSystem.Spacing.md)
-                                .background(
-                                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
-                                        .fill(DesignSystem.Colors.backgroundTertiary)
-                                )
-                        }
-                        
-                        // Email Field
-                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                            Text("Email")
-                                .font(DesignSystem.Typography.callout)
-                                .fontWeight(.medium)
-                                .foregroundColor(DesignSystem.Colors.textPrimary)
-                            
-                            TextField("Enter your email", text: $tempUserEmail)
                                 .font(DesignSystem.Typography.body)
                                 .padding(DesignSystem.Spacing.md)
                                 .background(
@@ -340,7 +319,6 @@ struct ProfileCustomizationView: View {
         }
         .onAppear {
             tempUserName = profileService.userName
-            tempUserEmail = profileService.userEmail
             tempUserIcon = profileService.userIcon
         }
     }
@@ -353,8 +331,7 @@ struct ProfileCustomizationView: View {
         
         profileService.updateProfile(
             name: tempUserName.isEmpty ? profileService.userName : tempUserName,
-            icon: tempUserIcon.isEmpty ? profileService.userIcon : tempUserIcon,
-            email: tempUserEmail.isEmpty ? profileService.userEmail : tempUserEmail
+            icon: tempUserIcon.isEmpty ? profileService.userIcon : tempUserIcon
         )
         dismiss()
     }

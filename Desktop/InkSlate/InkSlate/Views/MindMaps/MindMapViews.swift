@@ -68,7 +68,12 @@ struct MindMapListView: View {
             Button("Save") {
                 if let mindMap = editingMindMap {
                     mindMap.title = newMindMapName
-                    try? viewContext.save()
+                    mindMap.modifiedDate = Date()
+                    do {
+                        try viewContext.save()
+                    } catch {
+                        print("Failed to rename mind map: \(error)")
+                    }
                 }
             }
         }
@@ -76,9 +81,15 @@ struct MindMapListView: View {
     
     private func createNewMindMap() {
         let newMindMap = MindMap(context: viewContext)
+        newMindMap.id = UUID()  // Required for CloudKit sync
         newMindMap.title = "Untitled Mind Map"
-        viewContext.insert(newMindMap)
-        try? viewContext.save()
+        newMindMap.createdDate = Date()
+        newMindMap.modifiedDate = Date()
+        do {
+            try viewContext.save()
+        } catch {
+            print("Failed to create mind map: \(error)")
+        }
     }
 }
 
@@ -176,10 +187,18 @@ struct MindMapDetailView: View {
             } else {
                 // Create a new root node if none exists
                 let newRootNode = MindMapNode(context: viewContext)
+                newRootNode.id = UUID()  // Required for CloudKit sync
                 newRootNode.title = "Main Node"
                 newRootNode.mindMap = mindMap
+                newRootNode.createdDate = Date()
+                newRootNode.modifiedDate = Date()
+                mindMap.modifiedDate = Date()
                 currentNode = newRootNode
-                try? viewContext.save()
+                do {
+                    try viewContext.save()
+                } catch {
+                    print("Failed to create root node: \(error)")
+                }
             }
         }
     }
@@ -475,10 +494,22 @@ struct MindMapDetailView: View {
         let assignedRing = ring0Count < 9 ? 0 : 1
         
         let newNode = MindMapNode(context: viewContext)
+        newNode.id = UUID()  // Required for CloudKit sync
         newNode.title = "New Topic"
         newNode.parent = current
         newNode.ring = Int16(assignedRing)
-        try? viewContext.save()
+        newNode.createdDate = Date()
+        newNode.modifiedDate = Date()
+        
+        // Update parent's modification date
+        current.modifiedDate = Date()
+        mindMap.modifiedDate = Date()
+        
+        do {
+            try viewContext.save()
+        } catch {
+            print("Failed to add new node: \(error)")
+        }
         
         // Immediately open edit sheet for the new node
         selectedNodeForAction = newNode
@@ -486,8 +517,18 @@ struct MindMapDetailView: View {
     }
     
     private func deleteNode(_ node: MindMapNode) {
+        // Update parent's modification date before deleting
+        if let parent = node.parent {
+            parent.modifiedDate = Date()
+        }
+        mindMap.modifiedDate = Date()
+        
         viewContext.delete(node)
-        try? viewContext.save()
+        do {
+            try viewContext.save()
+        } catch {
+            print("Failed to delete node: \(error)")
+        }
     }
 }
 
@@ -730,7 +771,18 @@ struct EditNodeView: View {
                     Button("Save") {
                         node.title = title.isEmpty ? "Untitled" : title
                         node.notes = notes
-                        try? viewContext.save()
+                        node.modifiedDate = Date()
+                        
+                        // Update parent mindMap's modification date
+                        if let mindMap = node.mindMap {
+                            mindMap.modifiedDate = Date()
+                        }
+                        
+                        do {
+                            try viewContext.save()
+                        } catch {
+                            print("Failed to save node: \(error)")
+                        }
                         onDismiss()
                         dismiss()
                     }

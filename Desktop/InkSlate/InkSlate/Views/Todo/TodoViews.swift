@@ -469,6 +469,7 @@ struct TodoTaskRow: View {
     private func toggleTaskCompletion() {
         task.isCompleted.toggle()
         task.completedDate = task.isCompleted ? Date() : nil
+        task.modifiedDate = Date()  // Critical for CloudKit sync
         
         // If recurring, create next instance
         if task.isCompleted, hasRecurrence, let ruleString = task.recurrenceRule {
@@ -487,12 +488,14 @@ struct TodoTaskRow: View {
         }
         
         // Create new task instance
+        let now = Date()
         let newTask = TodoTask(context: viewContext)
         newTask.id = UUID()
         newTask.title = originalTask.title
         newTask.notes = originalTask.notes
         newTask.tab = originalTask.tab
-        newTask.createdDate = Date()
+        newTask.createdDate = now
+        newTask.modifiedDate = now  // Critical for CloudKit sync
         if originalTask.dueDate != nil {
             newTask.dueDate = nextDue
         } else {
@@ -504,7 +507,7 @@ struct TodoTaskRow: View {
         newTask.nextDueDate = rule.nextDueDate(from: nextDue)
         newTask.priority = originalTask.priority
         
-        viewContext.insert(newTask)
+        // Note: Task is already inserted into context when created with TodoTask(context:)
     }
     
     private func deleteTask() {
@@ -772,12 +775,14 @@ struct AddTodoTaskView: View {
             return
         }
         
+        let now = Date()
         let newTask = TodoTask(context: viewContext)
         newTask.title = trimmedTitle
         newTask.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         newTask.tab = tab
         newTask.id = UUID()
-        newTask.createdDate = Date()
+        newTask.createdDate = now
+        newTask.modifiedDate = now  // Critical for CloudKit sync
         newTask.isCompleted = false
         
         // Set due date
@@ -810,7 +815,7 @@ struct AddTodoTaskView: View {
             newTask.recurrenceType = "none"
         }
         
-        viewContext.insert(newTask)
+        // Note: Task is already inserted into context when created with TodoTask(context:)
         
         do {
             try viewContext.save()

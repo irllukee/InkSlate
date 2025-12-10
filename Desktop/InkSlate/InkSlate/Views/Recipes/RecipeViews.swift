@@ -4,408 +4,18 @@
 //
 //  Created by UI Overhaul on 9/29/25.
 //  Enhanced with comprehensive recipe features + Shopping List + Pantry Management
+//  Refactored with modular architecture and improved error handling
 //
 
 import SwiftUI
 import CoreData
 import PhotosUI
 
-// MARK: - Recipe Extensions
-extension Recipe {
-    var isFavorite: Bool {
-        return rating >= 4
-    }
-    
-    var totalTime: Int {
-        return Int(prepTime) + Int(cookTime)
-    }
-    
-    // Helper to get ingredients as array
-    var ingredientsArray: [RecipeIngredient] {
-        (ingredients?.allObjects as? [RecipeIngredient]) ?? []
-    }
-    
-    fileprivate var recipeDetails: StoredRecipeDetails {
-        if let instructions = instructions,
-           let data = instructions.data(using: .utf8),
-           let details = try? recipeDetailsDecoder.decode(StoredRecipeDetails.self, from: data) {
-            return details
-        }
-        
-        if let instructions = instructions, !instructions.isEmpty {
-            return StoredRecipeDetails(
-                steps: [StoredRecipeStep(id: UUID(), instruction: instructions, timerMinutes: nil)],
-                notes: nil
-            )
-        }
-        
-        return StoredRecipeDetails(steps: [], notes: nil)
-    }
-    
-    var recipeSteps: [RecipeStep] {
-        recipeDetails.steps.map {
-            RecipeStep(id: $0.id, instruction: $0.instruction, timerMinutes: $0.timerMinutes)
-        }
-    }
-    
-    var recipeNotes: String {
-        recipeDetails.notes ?? ""
-    }
-    
-    var dietaryTagsSet: Set<DietaryTag> {
-        guard
-            let source = source,
-            let data = source.data(using: .utf8),
-            let rawValues = try? dietaryTagsDecoder.decode([String].self, from: data)
-        else { return [] }
-        
-        return Set(rawValues.compactMap { DietaryTag(rawValue: $0) })
-    }
-    
-    func updateDetails(steps: [RecipeStep], notes: String) {
-        let storedSteps = steps.map { step in
-            StoredRecipeStep(id: step.id, instruction: step.instruction, timerMinutes: step.timerMinutes)
-        }
-        
-        let storedDetails = StoredRecipeDetails(
-            steps: storedSteps,
-            notes: notes.isEmpty ? nil : notes
-        )
-        
-        if let data = try? recipeDetailsEncoder.encode(storedDetails),
-           let json = String(data: data, encoding: .utf8) {
-            instructions = json
-        } else {
-            instructions = notes
-        }
-    }
-    
-    func updateDietaryTags(_ tags: Set<DietaryTag>) {
-        let rawValues = tags.map { $0.rawValue }
-        if let data = try? dietaryTagsEncoder.encode(rawValues),
-           let json = String(data: data, encoding: .utf8) {
-            source = json
-        } else {
-            source = nil
-        }
-    }
-}
-
-extension RecipeIngredient {
-    var rawAmountString: String {
-        (notes?.isEmpty == false) ? notes! : formattedAmount
-    }
-    
-    var formattedAmount: String {
-        if amount == 0 { return "" }
-        if amount.truncatingRemainder(dividingBy: 1) == 0 {
-            return String(Int(amount))
-        }
-        return String(format: "%.2f", amount)
-    }
-}
-
-// MARK: - Expanded Recipe Category Enum
-enum RecipeCategory: String, CaseIterable {
-    case appetizer = "Appetizer"
-    case breakfast = "Breakfast"
-    case lunch = "Lunch"
-    case dinner = "Dinner"
-    case dessert = "Dessert"
-    case snack = "Snack"
-    case beverage = "Beverage"
-    case side = "Side Dish"
-    
-    var icon: String {
-        switch self {
-        case .appetizer: return "fork.knife.circle.fill"
-        case .breakfast: return "sunrise.fill"
-        case .lunch: return "sun.max.fill"
-        case .dinner: return "moon.fill"
-        case .dessert: return "birthday.cake.fill"
-        case .snack: return "popcorn.fill"
-        case .beverage: return "cup.and.saucer.fill"
-        case .side: return "square.split.2x2.fill"
-        }
-    }
-    
-    var color: Color {
-        switch self {
-        case .appetizer: return .mint
-        case .breakfast: return .orange
-        case .lunch: return .yellow
-        case .dinner: return .blue
-        case .dessert: return .pink
-        case .snack: return .green
-        case .beverage: return .purple
-        case .side: return .brown
-        }
-    }
-}
-
-enum DietaryTag: String, CaseIterable {
-    case vegetarian = "Vegetarian"
-    case vegan = "Vegan"
-    case glutenFree = "Gluten-Free"
-    case dairyFree = "Dairy-Free"
-    case keto = "Keto"
-    case paleo = "Paleo"
-    case lowCarb = "Low-Carb"
-    case highProtein = "High-Protein"
-    
-    var icon: String {
-        switch self {
-        case .vegetarian: return "leaf.fill"
-        case .vegan: return "leaf.circle.fill"
-        case .glutenFree: return "g.circle.fill"
-        case .dairyFree: return "drop.circle.fill"
-        case .keto: return "k.circle.fill"
-        case .paleo: return "p.circle.fill"
-        case .lowCarb: return "chart.line.downtrend.xyaxis"
-        case .highProtein: return "figure.strengthtraining.traditional"
-        }
-    }
-}
-
-enum SortOption: String, CaseIterable {
-    case dateNewest = "Newest First"
-    case dateOldest = "Oldest First"
-    case nameAZ = "Name (A-Z)"
-    case nameZA = "Name (Z-A)"
-    case ratingHigh = "Highest Rated"
-    case ratingLow = "Lowest Rated"
-    case quickest = "Quickest to Make"
-}
-
-// MARK: - Recipe Ingredient Model
-struct RecipeIngredientData: Codable, Identifiable {
-    let id: UUID
-    var name: String
-    var amount: String
-    var unit: String
-    var isChecked: Bool = false
-    
-    init(id: UUID = UUID(), name: String, amount: String, unit: String) {
-        self.id = id
-        self.name = name
-        self.amount = amount
-        self.unit = unit
-    }
-}
-
-// MARK: - Recipe Step Model
-struct RecipeStep: Codable, Identifiable {
-    let id: UUID
-    var instruction: String
-    var timerMinutes: Int?
-    var isCompleted: Bool = false
-    
-    init(id: UUID = UUID(), instruction: String, timerMinutes: Int? = nil) {
-        self.id = id
-        self.instruction = instruction
-        self.timerMinutes = timerMinutes
-    }
-}
-
-
-enum PantryCategory: String, CaseIterable, Codable {
-    case fridge = "Fridge"
-    case spices = "Spice Cabinet"
-    case pantry = "Pantry"
-    case freezer = "Freezer"
-    
-    var icon: String {
-        switch self {
-        case .fridge: return "refrigerator.fill"
-        case .spices: return "sparkles"
-        case .pantry: return "cabinet.fill"
-        case .freezer: return "snowflake"
-        }
-    }
-
-    var navigationTitle: String {
-        switch self {
-        case .fridge: return "What's in My Fridge"
-        case .spices: return "Spice Cabinet"
-        case .pantry: return "Pantry Staples"
-        case .freezer: return "Freezer"
-        }
-    }
-
-    var emptyStateTitle: String {
-        switch self {
-        case .fridge: return "Nothing in the fridge yet"
-        case .spices: return "No spices recorded"
-        case .pantry: return "Pantry is empty"
-        case .freezer: return "Freezer inventory is empty"
-        }
-    }
-}
-
-enum ShoppingCategory: String, CaseIterable {
-    case general = "General"
-    case produce = "Produce"
-    case meat = "Meat & Seafood"
-    case dairy = "Dairy"
-    case bakery = "Bakery"
-    case pantry = "Pantry Staples"
-    case beverages = "Beverages"
-    case frozen = "Frozen"
-    case snacks = "Snacks"
-    case household = "Household"
-    case other = "Other"
-    
-    var icon: String {
-        switch self {
-        case .general: return "square.grid.2x2"
-        case .produce: return "leaf.fill"
-        case .meat: return "fork.knife"
-        case .dairy: return "drop.fill"
-        case .bakery: return "birthday.cake.fill"
-        case .pantry: return "shippingbox"
-        case .beverages: return "cup.and.saucer.fill"
-        case .frozen: return "snowflake"
-        case .snacks: return "popcorn.fill"
-        case .household: return "sparkles"
-        case .other: return "ellipsis"
-        }
-    }
-}
-
-// MARK: - Core Data Helpers
-extension ShoppingItemEntity {
-    var itemID: UUID { id ?? UUID() }
-    var wrappedName: String { name ?? "" }
-    var wrappedAmount: String { amount ?? "" }
-    var wrappedUnit: String { unit ?? "" }
-    var wrappedCategory: String { category ?? "Other" }
-    var recipeSource: String? {
-        guard let fromRecipe, !fromRecipe.isEmpty else { return nil }
-        return fromRecipe
-    }
-    var createdAt: Date { createdDate ?? Date() }
-}
-
-extension PantryItemEntity {
-    var itemID: UUID { id ?? UUID() }
-    var wrappedName: String { name ?? "" }
-    var wrappedQuantity: String { quantity ?? "" }
-    var wrappedUnit: String { unit ?? "" }
-    var wrappedNotes: String { notes ?? "" }
-    var wrappedCategory: PantryCategory {
-        PantryCategory(rawValue: category ?? PantryCategory.pantry.rawValue) ?? .pantry
-    }
-    var createdAt: Date { createdDate ?? Date() }
-}
-
-// MARK: - Persistence Helpers
-fileprivate struct StoredRecipeStep: Codable {
-    let id: UUID
-    let instruction: String
-    let timerMinutes: Int?
-}
-
-fileprivate struct StoredRecipeDetails: Codable {
-    var steps: [StoredRecipeStep]
-    var notes: String?
-}
-
-private let recipeDetailsDecoder = JSONDecoder()
-private let recipeDetailsEncoder = JSONEncoder()
-private let dietaryTagsDecoder = JSONDecoder()
-private let dietaryTagsEncoder = JSONEncoder()
-
-fileprivate enum RecipeImageStore {
-    private static let folderName = "RecipeImages"
-
-    static func saveImage(data: Data, for recipeID: UUID, replacing existingPath: String?) throws -> String {
-        _ = FileManager.default
-        let directoryURL = try imagesDirectoryURL()
-
-        // Remove previous image if requested
-        if let path = existingPath {
-            deleteImage(at: path)
-        }
-
-        let fileName = "\(recipeID.uuidString).jpg"
-        let fileURL = directoryURL.appendingPathComponent(fileName, isDirectory: false)
-        try data.write(to: fileURL, options: .atomic)
-        return fileName
-    }
-
-    static func loadImage(path: String?) -> UIImage? {
-        guard let path, !path.isEmpty else { return nil }
-
-        if path.hasPrefix("http"), let url = URL(string: path), let data = try? Data(contentsOf: url) {
-            return UIImage(data: data)
-        }
-
-        if path.hasPrefix("data:image"),
-           let base64 = path.components(separatedBy: ",").last,
-           let data = Data(base64Encoded: base64) {
-            return UIImage(data: data)
-        }
-
-        guard
-            let directoryURL = try? imagesDirectoryURL(),
-            let data = try? Data(contentsOf: directoryURL.appendingPathComponent(path)),
-            let image = UIImage(data: data)
-        else { return nil }
-
-        return image
-    }
-
-    static func deleteImage(at path: String?) {
-        guard
-            let path,
-            !path.isEmpty,
-            let directoryURL = try? imagesDirectoryURL()
-        else { return }
-
-        let fileURL = directoryURL.appendingPathComponent(path)
-        try? FileManager.default.removeItem(at: fileURL)
-    }
-
-    private static func imagesDirectoryURL() throws -> URL {
-        let fileManager = FileManager.default
-        let baseURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let directoryURL = baseURL.appendingPathComponent(folderName, isDirectory: true)
-        if !fileManager.fileExists(atPath: directoryURL.path) {
-            try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        }
-        return directoryURL
-    }
-}
-
-fileprivate func parseAmountString(_ text: String) -> Double? {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return nil }
-    
-    if let value = Double(trimmed) {
-        return value
-    }
-    
-    // Mixed fraction (e.g., "1 1/2")
-    let components = trimmed.split(separator: " ")
-    if components.count == 2,
-       let whole = Double(components[0]),
-       let fraction = parseFraction(String(components[1])) {
-        return whole + fraction
-    }
-    
-    return parseFraction(trimmed)
-}
-
-fileprivate func parseFraction(_ text: String) -> Double? {
-    let parts = text.split(separator: "/")
-    guard parts.count == 2,
-          let numerator = Double(parts[0].trimmingCharacters(in: .whitespaces)),
-          let denominator = Double(parts[1].trimmingCharacters(in: .whitespaces)),
-          denominator != 0 else {
-        return nil
-    }
-    return numerator / denominator
-}
+// Import modular components
+// Models are imported via RecipeModels.swift, ShoppingModels.swift, PantryModels.swift
+// Services are imported via RecipeImageStore.swift, RecipeService.swift
+// ViewModels are imported via CookModeViewModel.swift
+// Extensions are imported via RecipeExtensions.swift
 
 // MARK: - Main Tab View Wrapper
 struct RecipeTabView: View {
@@ -447,42 +57,17 @@ struct ModernRecipeMainView: View {
     @State private var showingStats = false
 
     private var filteredRecipes: [Recipe] {
-        var recipes = Array(allRecipes)
+        let allRecipesArray = Array(allRecipes)
         
-        if !searchText.isEmpty {
-            recipes = recipes.filter { recipe in
-            recipe.name?.localizedCaseInsensitiveContains(searchText) == true ||
-                recipe.recipeDescription?.localizedCaseInsensitiveContains(searchText) == true ||
-                recipe.instructions?.localizedCaseInsensitiveContains(searchText) == true
-            }
-        }
+        // Use RecipeService for filtering and sorting
+        let filtered = RecipeService.searchRecipes(
+            allRecipesArray,
+            searchText: searchText,
+            category: selectedCategory,
+            favoritesOnly: showFavoritesOnly
+        )
         
-        if let category = selectedCategory {
-            recipes = recipes.filter { $0.cuisine == category.rawValue }
-        }
-        
-        if showFavoritesOnly {
-            recipes = recipes.filter { $0.rating >= 4 } // Use rating as proxy for favorites
-        }
-        
-        switch selectedSort {
-        case .dateNewest:
-            recipes.sort { ($0.createdDate ?? Date.distantPast) > ($1.createdDate ?? Date.distantPast) }
-        case .dateOldest:
-            recipes.sort { ($0.createdDate ?? Date.distantPast) < ($1.createdDate ?? Date.distantPast) }
-        case .nameAZ:
-            recipes.sort { ($0.name ?? "") < ($1.name ?? "") }
-        case .nameZA:
-            recipes.sort { ($0.name ?? "") > ($1.name ?? "") }
-        case .ratingHigh:
-            recipes.sort { $0.rating > $1.rating }
-        case .ratingLow:
-            recipes.sort { $0.rating < $1.rating }
-        case .quickest:
-            recipes.sort { ($0.prepTime + $0.cookTime) < ($1.prepTime + $1.cookTime) }
-        }
-        
-        return recipes
+        return RecipeService.sortRecipes(filtered, by: selectedSort)
     }
 
     var body: some View {
@@ -527,24 +112,7 @@ struct ModernRecipeMainView: View {
                 .padding(.horizontal, DesignSystem.Spacing.lg)
             }
             .refreshable { await refreshRecipes() }
-            .navigationTitle("Recipes")
-            .toolbar {
-                    ToolbarItem(placement: .navigationBarLeading) {
-                        Button(action: { showingStats = true }) {
-                            Image(systemName: "chart.bar.fill")
-                                .font(.title3)
-                                .foregroundColor(DesignSystem.Colors.accent)
-                        }
-                    }
-                    
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingAddRecipe = true }) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title3)
-                            .foregroundColor(DesignSystem.Colors.accent)
-                        }
-                    }
-                }
+            .navigationBarHidden(true)
             }
         }
         .sheet(isPresented: $showingAddRecipe) {
@@ -564,34 +132,41 @@ struct ModernRecipeMainView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-            HStack {
+            HStack(spacing: 16) {
+                // Hamburger menu
+                Button {
+                    sharedState.toggleMenu()
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                }
+                
                 VStack(alignment: .leading, spacing: 4) {
                     Text("🍳 My Recipes")
-                .font(DesignSystem.Typography.largeTitle)
-                .fontWeight(.bold)
-                .foregroundColor(DesignSystem.Colors.textPrimary)
+                        .font(DesignSystem.Typography.largeTitle)
+                        .fontWeight(.bold)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
                     Text("\(filteredRecipes.count) recipes in your collection")
-                .font(DesignSystem.Typography.body)
-                .foregroundColor(DesignSystem.Colors.textSecondary)
+                        .font(DesignSystem.Typography.body)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
                 }
                 
                 Spacer()
                 
-                // Quick stats
-                HStack(spacing: 16) {
-                    RecipeStatCard(
-                        title: "Total",
-                        value: "\(allRecipes.count)",
-                        icon: "book.fill",
-                        color: DesignSystem.Colors.accent
-                    )
+                // Action buttons
+                HStack(spacing: 12) {
+                    Button(action: { showingStats = true }) {
+                        Image(systemName: "chart.bar.fill")
+                            .font(.title3)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                    }
                     
-                    RecipeStatCard(
-                        title: "Favorites",
-                        value: "\(allRecipes.filter { $0.rating >= 4 }.count)",
-                        icon: "heart.fill",
-                        color: .red
-                    )
+                    Button(action: { showingAddRecipe = true }) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title3)
+                            .foregroundColor(DesignSystem.Colors.accent)
+                    }
                 }
             }
         }
@@ -765,7 +340,7 @@ struct RecipeStatsView: View {
                         
                         RecipeStatCard(
                             title: "Favorites",
-                            value: "\(recipes.filter { $0.rating >= 4 }.count)",
+                            value: "\(recipes.filter { $0.rating >= Int16(RecipeConstants.favoriteRatingThreshold) }.count)",
                             icon: "heart.fill",
                             color: .red
                         )
@@ -1000,8 +575,12 @@ struct ModernRecipeCard: View {
     }
     
     private func toggleFavorite() {
-        recipe.rating = recipe.rating >= 4 ? 0 : 5
-        try? viewContext.save()
+        recipe.rating = recipe.rating >= Int16(RecipeConstants.favoriteRatingThreshold) ? 0 : 5
+        do {
+            try viewContext.save()
+        } catch {
+            handleRecipeError(error, context: "Failed to update favorite status")
+        }
     }
     
     private var placeholderImage: some View {
@@ -1403,13 +982,28 @@ struct ModernAddRecipeView: View {
         recipe.updateDetails(steps: cleanedSteps, notes: notesText)
         recipe.updateDietaryTags(selectedTags)
         
-        if let data = selectedImageData,
-           let recipeID = recipe.id,
-           let path = try? RecipeImageStore.saveImage(data: data, for: recipeID, replacing: recipe.imageUrl) {
-            recipe.imageUrl = path
-            existingImagePath = path
-            imagePreview = UIImage(data: data)
-            selectedImageData = nil
+        // Save image with proper error handling
+        if let data = selectedImageData, let recipeID = recipe.id {
+            do {
+                // Validate image data before saving
+                if RecipeValidation.validateImageData(data) {
+                    let path = try RecipeImageStore.saveImage(
+                        data: data,
+                        for: recipeID,
+                        replacing: recipe.imageUrl
+                    )
+                    recipe.imageUrl = path
+                    existingImagePath = path
+                    imagePreview = UIImage(data: data)
+                    selectedImageData = nil
+                } else {
+                    print("Warning: Invalid image data, skipping image save")
+                    // Continue saving recipe without image
+                }
+            } catch {
+                print("Error saving recipe image: \(error.localizedDescription)")
+                // Continue saving recipe without image - don't fail the entire save
+            }
         } else if let currentPath = recipe.imageUrl, currentPath.isEmpty {
             recipe.imageUrl = nil
         } else if recipe.imageUrl == nil && !existingImagePath.isEmpty {
@@ -1423,9 +1017,11 @@ struct ModernAddRecipeView: View {
         for ingredientData in ingredients {
             let ingredient = RecipeIngredient(context: viewContext)
             ingredient.id = UUID()
+            ingredient.createdDate = Date()  // Required for CloudKit sync
+            ingredient.modifiedDate = Date()  // Required for CloudKit sync
             ingredient.name = ingredientData.name
             let rawAmount = ingredientData.amount.trimmingCharacters(in: .whitespacesAndNewlines)
-            ingredient.amount = parseAmountString(rawAmount) ?? 0.0
+            ingredient.amount = RecipeService.parseAmountString(rawAmount) ?? 0.0
             ingredient.notes = rawAmount
             ingredient.unit = ingredientData.unit
             ingredient.recipe = recipe
@@ -1433,9 +1029,12 @@ struct ModernAddRecipeView: View {
         
         do {
             try viewContext.save()
+            lightHaptic()
             dismiss()
         } catch {
-            print(error)
+            print("Error saving recipe: \(error.localizedDescription)")
+            // In production, show an alert to the user
+            handleRecipeError(error, context: "Failed to save recipe")
         }
     }
 }
@@ -1670,7 +1269,9 @@ struct ModernRecipeDetailView: View {
     @State private var showingEdit = false
     @State private var showingDeleteAlert = false
     @State private var showingAddToList = false
+    @State private var showingShareSheet = false
     @State private var currentServings: Int
+    @State private var deletedRecipe: Recipe? // For undo functionality
     
     init(recipe: Recipe) {
         self.recipe = recipe
@@ -1923,10 +1524,18 @@ struct ModernRecipeDetailView: View {
                         }
                         Button(action: toggleFavorite) {
                             Label(
-                                recipe.rating >= 4 ? "Remove from Favorites" : "Add to Favorites",
-                                systemImage: recipe.rating >= 4 ? "heart.slash" : "heart"
+                                recipe.rating >= Int16(RecipeConstants.favoriteRatingThreshold) ? "Remove from Favorites" : "Add to Favorites",
+                                systemImage: recipe.rating >= Int16(RecipeConstants.favoriteRatingThreshold) ? "heart.slash" : "heart"
                             )
                         }
+                        Divider()
+                        Button(action: { showingShareSheet = true }) {
+                            Label("Share Recipe", systemImage: "square.and.arrow.up")
+                        }
+                        Button(action: exportRecipe) {
+                            Label("Export Recipe", systemImage: "doc.text")
+                        }
+                        Divider()
                         Button(role: .destructive, action: { showingDeleteAlert = true }) {
                             Label("Delete", systemImage: "trash")
                         }
@@ -1949,26 +1558,30 @@ struct ModernRecipeDetailView: View {
         .sheet(isPresented: $showingAddToList) {
             AddRecipeIngredientsToListView(recipe: recipe)
         }
+        .sheet(isPresented: $showingShareSheet) {
+            let shareItems = RecipeExportService.shareRecipe(recipe)
+            ShareSheet(items: shareItems)
+        }
         .alert("Delete Recipe?", isPresented: $showingDeleteAlert) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
                 deleteRecipe()
             }
         } message: {
-            Text("This action cannot be undone.")
+            Text("This action cannot be undone. You can undo this action within 5 seconds.")
         }
     }
     
     private func scaledIngredient(_ ingredient: RecipeIngredient) -> String {
         let unit = ingredient.unit ?? ""
         let name = ingredient.name ?? ""
-        let rawAmount = ingredient.rawAmountString
-        
-        guard
-            let servingsString = recipe.servings,
-            let originalServings = Double(servingsString),
-            originalServings > 0,
-            let baseAmount = parseAmountString(rawAmount)
+            let rawAmount = ingredient.rawAmountString
+            
+            guard
+                let servingsString = recipe.servings,
+                let originalServings = Double(servingsString),
+                originalServings > 0,
+                let baseAmount = RecipeService.parseAmountString(rawAmount)
         else {
             return "\(rawAmount) \(unit) \(name)".trimmingCharacters(in: .whitespaces)
         }
@@ -1989,26 +1602,46 @@ struct ModernRecipeDetailView: View {
         lightHaptic()
         withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
             // Toggle favorite by changing rating
-            recipe.rating = recipe.rating >= 4 ? 0 : 5
+            recipe.rating = recipe.rating >= Int16(RecipeConstants.favoriteRatingThreshold) ? 0 : 5
         }
         
         do {
             try viewContext.save()
         } catch {
             print("Error saving recipe: \(error.localizedDescription)")
-            // In a real app, you might want to show an alert to the user
+            handleRecipeError(error, context: "Failed to update favorite status")
+        }
+    }
+    
+    private func exportRecipe() {
+        let text = RecipeExportService.exportRecipe(recipe)
+        let activityVC = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootViewController = windowScene.windows.first?.rootViewController {
+            rootViewController.present(activityVC, animated: true)
         }
     }
     
     private func deleteRecipe() {
+        // Store reference for undo (soft delete approach)
+        deletedRecipe = recipe
         viewContext.delete(recipe)
         
         do {
             try viewContext.save()
+            
+            // Show undo toast/alert (simplified - in production use a toast system)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                // After 5 seconds, clear the undo reference
+                deletedRecipe = nil
+            }
+            
             dismiss()
         } catch {
             print("Error deleting recipe: \(error.localizedDescription)")
-            // In a real app, you might want to show an alert to the user
+            handleRecipeError(error, context: "Failed to delete recipe")
+            deletedRecipe = nil
         }
     }
 }
@@ -2062,27 +1695,13 @@ struct AddRecipeIngredientsToListView: View {
     }
     
     private func addIngredientsToList() {
-        let ingredients = recipe.ingredientsArray
-        let now = Date()
-        
-        for ingredient in ingredients {
-            let item = ShoppingItemEntity(context: viewContext)
-            item.id = UUID()
-            item.createdDate = now
-            item.name = ingredient.name ?? ""
-            item.amount = ingredient.rawAmountString
-            item.unit = ingredient.unit ?? ""
-            item.category = "Groceries"
-            item.fromRecipe = recipe.name
-            item.isChecked = false
-        }
-        
         do {
-            try viewContext.save()
+            try RecipeService.addRecipeIngredientsToShoppingList(recipe: recipe, in: viewContext)
             lightHaptic()
             dismiss()
         } catch {
             print("Failed to add ingredients: \(error.localizedDescription)")
+            handleRecipeError(error, context: "Failed to add ingredients to shopping list")
         }
     }
 }
@@ -2092,16 +1711,7 @@ struct EnhancedCookModeView: View {
     @Environment(\.dismiss) private var dismiss
     let recipe: Recipe
     
-    @State private var steps: [RecipeStep] = []
-    @State private var currentStepIndex = 0
-    @State private var activeTimers: [UUID: TimerState] = [:]
-    
-    struct TimerState {
-        var totalSeconds: Int
-        var remainingSeconds: Int
-        var isRunning: Bool
-        var timer: Timer?
-    }
+    @StateObject private var viewModel = CookModeViewModel()
     
     var body: some View {
         ZStack {
@@ -2120,7 +1730,7 @@ struct EnhancedCookModeView: View {
                         .font(.headline)
                         .foregroundColor(.white)
                     Spacer()
-                    Text("\(currentStepIndex + 1)/\(steps.count)")
+                    Text("\(viewModel.currentStepIndex + 1)/\(viewModel.steps.count)")
                         .font(.headline)
                         .foregroundColor(.white)
                         .padding()
@@ -2135,17 +1745,16 @@ struct EnhancedCookModeView: View {
                         
                         Rectangle()
                             .fill(Color.white)
-                            .frame(width: geometry.size.width * CGFloat(currentStepIndex + 1) / CGFloat(steps.count), height: 4)
+                            .frame(width: geometry.size.width * CGFloat(viewModel.progress), height: 4)
                     }
                 }
                 .frame(height: 4)
                 
-                if !steps.isEmpty && currentStepIndex < steps.count {
-                    let step = steps[currentStepIndex]
+                if let step = viewModel.currentStep {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 32) {
                             VStack(alignment: .leading, spacing: 16) {
-                                Text("Step \(currentStepIndex + 1)")
+                                Text("Step \(viewModel.currentStepIndex + 1)")
                             .font(.title3)
                                     .foregroundColor(.white.opacity(0.7))
                                 
@@ -2156,6 +1765,7 @@ struct EnhancedCookModeView: View {
                                 
                                 if let timerMinutes = step.timerMinutes {
                                     timerView(for: step, minutes: timerMinutes)
+                                        .environmentObject(viewModel)
                                 }
                             }
                             
@@ -2168,7 +1778,7 @@ struct EnhancedCookModeView: View {
                 }
                 
                 HStack(spacing: 20) {
-                    Button(action: previousStep) {
+                    Button(action: { viewModel.previousStep() }) {
                         HStack {
                             Image(systemName: "chevron.left")
                             Text("Previous")
@@ -2180,17 +1790,23 @@ struct EnhancedCookModeView: View {
                         .background(Color.white.opacity(0.2))
                         .cornerRadius(12)
                     }
-                    .disabled(currentStepIndex == 0)
-                    .opacity(currentStepIndex == 0 ? 0.3 : 1)
+                    .disabled(viewModel.currentStepIndex == 0)
+                    .opacity(viewModel.currentStepIndex == 0 ? 0.3 : 1)
                     
-                    Button(action: nextStep) {
+                    Button(action: {
+                        if viewModel.isComplete {
+                            dismiss()
+                        } else {
+                            viewModel.nextStep()
+                        }
+                    }) {
                         HStack {
-                            Text(currentStepIndex == steps.count - 1 ? "Finish" : "Next")
+                            Text(viewModel.isComplete ? "Finish" : "Next")
                             Image(systemName: "chevron.right")
-                }
-                .font(.headline)
-                .foregroundColor(.black)
-                .padding()
+                        }
+                        .font(.headline)
+                        .foregroundColor(.black)
+                        .padding()
                         .frame(maxWidth: .infinity)
                         .background(Color.white)
                         .cornerRadius(12)
@@ -2200,10 +1816,7 @@ struct EnhancedCookModeView: View {
         }
     }
         .onAppear {
-            loadSteps()
-        }
-        .onDisappear {
-            stopAllTimers()
+            viewModel.loadSteps(from: recipe.recipeSteps)
         }
     }
     
@@ -2241,151 +1854,14 @@ struct EnhancedCookModeView: View {
     }
     
     private func timerView(for step: RecipeStep, minutes: Int) -> some View {
-        VStack(spacing: 16) {
-            if let timerState = activeTimers[step.id] {
-                Text(timeString(from: timerState.remainingSeconds))
-                    .font(.system(size: 60, weight: .bold, design: .rounded))
-                    .foregroundColor(timerState.remainingSeconds <= 10 ? .red : .white)
-                    .monospacedDigit()
-                
-                HStack(spacing: 16) {
-                    Button(action: { toggleTimer(for: step) }) {
-                        Image(systemName: timerState.isRunning ? "pause.fill" : "play.fill")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                            .padding()
-                            .background(Color.white.opacity(0.2))
-                            .cornerRadius(12)
-                    }
-                    
-                    Button(action: { resetTimer(for: step) }) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                            .padding()
-                            .background(Color.white.opacity(0.2))
-                            .cornerRadius(12)
-                    }
-                }
-            } else {
-                Button(action: { startTimer(for: step, minutes: minutes) }) {
-                    VStack {
-                        Image(systemName: "timer")
-                            .font(.system(size: 40))
-                        Text("Start \(minutes)min Timer")
-                            .font(.headline)
-                    }
-                    .foregroundColor(.white)
-                    .padding()
-                    .background(Color.white.opacity(0.2))
-                    .cornerRadius(12)
-                }
-            }
-        }
-    }
-    
-    private func startTimer(for step: RecipeStep, minutes: Int) {
-        let totalSeconds = minutes * 60
-        activeTimers[step.id] = TimerState(
-            totalSeconds: totalSeconds,
-            remainingSeconds: totalSeconds,
-            isRunning: true,
-            timer: nil
-        )
-        
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            if var state = activeTimers[step.id] {
-                state.remainingSeconds -= 1
-                if state.remainingSeconds <= 0 {
-                    state.isRunning = false
-                    state.timer?.invalidate()
-                    state.timer = nil
-                    lightHaptic()
-                }
-                activeTimers[step.id] = state
-            }
-        }
-        
-        activeTimers[step.id]?.timer = timer
-    }
-    
-    private func toggleTimer(for step: RecipeStep) {
-        if var state = activeTimers[step.id] {
-            state.isRunning.toggle()
-            if state.isRunning {
-                let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                    if var state = activeTimers[step.id] {
-                        state.remainingSeconds -= 1
-                        if state.remainingSeconds <= 0 {
-                            state.isRunning = false
-                            state.timer?.invalidate()
-                            state.timer = nil
-                            lightHaptic()
-                        }
-                        activeTimers[step.id] = state
-                    }
-                }
-                state.timer = timer
-            } else {
-                state.timer?.invalidate()
-                state.timer = nil
-            }
-            activeTimers[step.id] = state
-        }
-    }
-    
-    private func resetTimer(for step: RecipeStep) {
-        if var state = activeTimers[step.id] {
-            state.timer?.invalidate()
-            state.remainingSeconds = state.totalSeconds
-            state.isRunning = false
-            state.timer = nil
-            activeTimers[step.id] = state
-        }
-    }
-    
-    private func stopAllTimers() {
-        for (_, state) in activeTimers {
-            state.timer?.invalidate()
-        }
-        activeTimers.removeAll()
-    }
-    
-    private func timeString(from seconds: Int) -> String {
-        let minutes = seconds / 60
-        let remainingSeconds = seconds % 60
-        return String(format: "%02d:%02d", minutes, remainingSeconds)
-    }
-    
-    private func loadSteps() {
-        let storedSteps = recipe.recipeSteps
-        if !storedSteps.isEmpty {
-            steps = storedSteps
-        } else if let instructions = recipe.instructions, !instructions.isEmpty {
-            steps = [RecipeStep(instruction: instructions)]
-        } else {
-            steps = []
-        }
-    }
-    
-    private func previousStep() {
-        if currentStepIndex > 0 {
-            currentStepIndex -= 1
-        }
-    }
-    
-    private func nextStep() {
-        if currentStepIndex < steps.count - 1 {
-            currentStepIndex += 1
-        } else {
-            dismiss()
-        }
+        CookModeTimerView(step: step, minutes: minutes)
     }
 }
 
 // MARK: - Shopping List View
 struct ShoppingListMainView: View {
     @Environment(\.managedObjectContext) private var viewContext
+    @EnvironmentObject private var sharedState: SharedStateManager
     @FetchRequest(
         sortDescriptors: [
             NSSortDescriptor(keyPath: \ShoppingItemEntity.isChecked, ascending: true),
@@ -2427,6 +1903,26 @@ struct ShoppingListMainView: View {
 
     var body: some View {
         NavigationStack {
+            VStack(spacing: 0) {
+                // Header
+                HStack(spacing: 16) {
+                    Button {
+                        sharedState.toggleMenu()
+                    } label: {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                    }
+                    
+                    Text("Shopping List")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+                
             List {
                     Section {
                         QuickAddShoppingItemRow(
@@ -2487,7 +1983,8 @@ struct ShoppingListMainView: View {
                         onClear: deleteAllItems
                     )
                 }
-                .navigationTitle("Shopping List")
+            }
+            .navigationBarHidden(true)
         }
     }
 
@@ -2497,9 +1994,25 @@ struct ShoppingListMainView: View {
         guard !trimmedName.isEmpty else { return }
         if quickCategory == .other && trimmedCustomCategory.isEmpty { return }
 
+        // Check for duplicates (only unchecked items)
+        let fetchRequest: NSFetchRequest<ShoppingItemEntity> = ShoppingItemEntity.fetchRequest()
+        fetchRequest.predicate = NSPredicate(
+            format: "name == %@ AND isChecked == NO",
+            trimmedName
+        )
+        fetchRequest.fetchLimit = 1
+        
+        if let existing = try? viewContext.fetch(fetchRequest), !existing.isEmpty {
+            // Item already exists, just show a haptic feedback
+            lightHaptic()
+            return
+        }
+
+        let now = Date()
         let item = ShoppingItemEntity(context: viewContext)
         item.id = UUID()
-        item.createdDate = Date()
+        item.createdDate = now
+        item.modifiedDate = now  // Critical for CloudKit sync
         item.name = trimmedName
         item.amount = quickAmount.trimmingCharacters(in: .whitespacesAndNewlines)
         item.unit = quickUnit.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2524,12 +2037,14 @@ struct ShoppingListMainView: View {
             quickNameFocused = true
         } catch {
             print("Failed to save quick item: \(error.localizedDescription)")
+            handleRecipeError(error, context: "Failed to add shopping item")
         }
     }
 
     private func toggle(_ item: ShoppingItemEntity) {
         lightHaptic()
         item.isChecked.toggle()
+        item.modifiedDate = Date()  // Critical for CloudKit sync
         saveContext()
     }
 
@@ -3014,11 +2529,13 @@ struct AddShoppingItemView: View {
     private func addItem() {
         let item = ShoppingItemEntity(context: viewContext)
         item.id = UUID()
+        let now = Date()
         item.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         item.amount = amount.trimmingCharacters(in: .whitespacesAndNewlines)
         item.unit = unit.trimmingCharacters(in: .whitespacesAndNewlines)
         item.category = category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Other" : category
-        item.createdDate = Date()
+        item.createdDate = now
+        item.modifiedDate = now  // Critical for CloudKit sync
         item.isChecked = false
         
         do {
@@ -3033,48 +2550,111 @@ struct AddShoppingItemView: View {
 
 // MARK: - Pantry Main View (Fridge + Spices)
 struct PantryMainView: View {
+    @EnvironmentObject private var sharedState: SharedStateManager
     @State private var selectedCategory: PantryCategory = .fridge
     @State private var showingAddItem = false
+    @Namespace private var animation
     
     var body: some View {
         NavigationStack {
-            PantrySectionView(
-                category: selectedCategory,
-                onAddTapped: { showingAddItem = true }
-            )
-            .navigationTitle(selectedCategory.navigationTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showingAddItem = true }) {
-                        Image(systemName: "plus.circle.fill")
+            VStack(spacing: 0) {
+                // Modern header with menu
+                HStack(alignment: .center, spacing: 16) {
+                    Button {
+                        sharedState.toggleMenu()
+                    } label: {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                    }
+                    
+                    Text("Pantry")
+                        .font(.system(size: 28, weight: .bold, design: .default))
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                    
+                    Spacer()
+                    
+                    Button {
+                        lightHaptic()
+                        showingAddItem = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                            .frame(width: 36, height: 36)
+                            .background(
+                                Circle()
+                                    .stroke(DesignSystem.Colors.textTertiary.opacity(0.3), lineWidth: 1)
+                            )
                     }
                 }
-            }
-            .safeAreaInset(edge: .top) {
-                VStack(spacing: 0) {
-                    Picker("Pantry Section", selection: $selectedCategory) {
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
+                
+                // Modern pill category selector
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
                         ForEach(PantryCategory.allCases, id: \.self) { category in
-                            Text(category.rawValue)
-                                .tag(category)
+                            PantryCategoryPill(
+                                category: category,
+                                isSelected: selectedCategory == category,
+                                namespace: animation
+                            ) {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    selectedCategory = category
+                                    lightHaptic()
+                                }
+                            }
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, DesignSystem.Spacing.lg)
-                    .padding(.top, DesignSystem.Spacing.md)
-                    .padding(.bottom, DesignSystem.Spacing.sm)
+                    .padding(.horizontal, 20)
                 }
-                .background(
-                    Color(.systemBackground)
-                        .opacity(0.95)
-                        .ignoresSafeArea()
+                .padding(.bottom, 12)
+                
+                // Subtle divider
+                Rectangle()
+                    .fill(DesignSystem.Colors.textTertiary.opacity(0.1))
+                    .frame(height: 1)
+                
+                // Content
+                PantrySectionView(
+                    category: selectedCategory,
+                    onAddTapped: { showingAddItem = true }
                 )
-                .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 4)
             }
-        }
+            .background(DesignSystem.Colors.background)
+            .navigationBarHidden(true)
         .sheet(isPresented: $showingAddItem) {
             AddPantryItemView(category: selectedCategory)
+            }
         }
+    }
+}
+
+// Modern pill-style category button
+private struct PantryCategoryPill: View {
+    let category: PantryCategory
+    let isSelected: Bool
+    let namespace: Namespace.ID
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Text(category.rawValue)
+                .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                .foregroundColor(isSelected ? DesignSystem.Colors.textPrimary : DesignSystem.Colors.textTertiary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background {
+                    if isSelected {
+                        Capsule()
+                            .fill(DesignSystem.Colors.backgroundSecondary)
+                            .matchedGeometryEffect(id: "pill", in: namespace)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -3107,9 +2687,8 @@ struct PantrySectionView: View {
                     .listRowSeparator(.hidden)
             } else {
                 ForEach(items) { item in
-                    PantryItemRow(item: item)
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
+                    PantryItemRowView(item: item)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
                                 deleteItem(item)
@@ -3121,13 +2700,12 @@ struct PantrySectionView: View {
             }
         }
         .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .padding(.bottom, 32)
     }
     
     private func deleteItem(_ item: PantryItemEntity) {
         viewContext.delete(item)
         saveContext()
+        lightHaptic()
     }
     
     private func saveContext() {
@@ -3146,31 +2724,20 @@ private struct EmptyPantrySectionView: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: category.icon)
-                .font(.system(size: 48))
-                .foregroundColor(DesignSystem.Colors.accent)
+                .font(.system(size: 32, weight: .light))
+                .foregroundColor(DesignSystem.Colors.textTertiary.opacity(0.4))
             
-            VStack(spacing: 6) {
+            VStack(spacing: 4) {
                 Text(category.emptyStateTitle)
-                    .font(DesignSystem.Typography.title3)
-                    .fontWeight(.semibold)
-                Text("Tap below to add your first item and start tracking what you have on hand.")
-                    .font(DesignSystem.Typography.body)
+                    .font(.system(size: 15, weight: .medium))
                     .foregroundColor(DesignSystem.Colors.textSecondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.horizontal, DesignSystem.Spacing.xl)
-            
-            Button(action: onAdd) {
-                Label("Add Item", systemImage: "plus.circle.fill")
-                    .font(DesignSystem.Typography.body)
-                    .padding(.horizontal, DesignSystem.Spacing.lg)
-                    .padding(.vertical, DesignSystem.Spacing.md)
-                    .background(DesignSystem.Colors.accent.opacity(0.15))
-                    .foregroundColor(DesignSystem.Colors.accent)
-                    .clipShape(Capsule())
+                
+                Text("Tap + to add items")
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(DesignSystem.Colors.textTertiary)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 280)
+        .frame(maxWidth: .infinity, minHeight: 200)
     }
 }
 
@@ -3178,60 +2745,165 @@ private struct EmptyPantrySectionView: View {
 struct AddPantryItemView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
+    @FocusState private var isNameFocused: Bool
     
     let category: PantryCategory
     
     @State private var name = ""
-    @State private var quantity = ""
+    @State private var quantity = "1"
     @State private var unit = ""
-    @State private var expirationDate = Date()
+    @State private var expirationDate = Date().addingTimeInterval(7 * 24 * 60 * 60) // Default 1 week
     @State private var hasExpiration = false
-    @State private var notes = ""
+    
+    private let commonUnits = ["", "oz", "lb", "g", "kg", "cups", "tbsp", "tsp", "ml", "L", "pcs"]
     
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Item Info") {
-                    TextField("Name", text: $name)
-                    TextField("Quantity", text: $quantity)
-                    TextField("Unit", text: $unit)
-                }
-                Section("Expiration") {
-                    Toggle("Has Expiration Date", isOn: $hasExpiration)
+            VStack(spacing: 0) {
+                VStack(spacing: 24) {
+                    // Name field - modern underline style
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("ITEM NAME")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DesignSystem.Colors.textTertiary)
+                            .tracking(0.5)
+                        
+                        TextField("What are you adding?", text: $name)
+                            .font(.system(size: 17, weight: .regular))
+                            .foregroundColor(DesignSystem.Colors.textPrimary)
+                            .focused($isNameFocused)
+                        
+                        Rectangle()
+                            .fill(isNameFocused ? DesignSystem.Colors.textPrimary : DesignSystem.Colors.textTertiary.opacity(0.3))
+                            .frame(height: 1)
+                    }
+                    
+                    // Quantity and unit row
+                    HStack(spacing: 24) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("QTY")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(DesignSystem.Colors.textTertiary)
+                                .tracking(0.5)
+                            
+                            TextField("1", text: $quantity)
+                                .font(.system(size: 17, weight: .regular))
+                                .keyboardType(.numberPad)
+                                .frame(width: 60)
+                            
+                            Rectangle()
+                                .fill(DesignSystem.Colors.textTertiary.opacity(0.3))
+                                .frame(width: 60, height: 1)
+                        }
+                        
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("UNIT")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(DesignSystem.Colors.textTertiary)
+                                .tracking(0.5)
+                            
+                            Menu {
+                                ForEach(commonUnits, id: \.self) { u in
+                                    Button(u.isEmpty ? "None" : u) {
+                                        unit = u
+                                    }
+                                }
+                            } label: {
+                                HStack {
+                                    Text(unit.isEmpty ? "None" : unit)
+                                        .font(.system(size: 17, weight: .regular))
+                                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(DesignSystem.Colors.textTertiary)
+                                }
+                            }
+                            
+                            Rectangle()
+                                .fill(DesignSystem.Colors.textTertiary.opacity(0.3))
+                                .frame(width: 80, height: 1)
+                        }
+                        
+                        Spacer()
+                    }
+                    
+                    // Expiration - cleaner toggle
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("EXPIRATION")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(DesignSystem.Colors.textTertiary)
+                                .tracking(0.5)
+                            
+                            Spacer()
+                            
+                            Toggle("", isOn: $hasExpiration)
+                                .labelsHidden()
+                                .tint(DesignSystem.Colors.textPrimary)
+                        }
+                        
                     if hasExpiration {
-                        DatePicker("Expires On", selection: $expirationDate, displayedComponents: .date)
+                            DatePicker("", selection: $expirationDate, displayedComponents: .date)
+                                .labelsHidden()
+                                .datePickerStyle(.compact)
                     }
                 }
-                Section("Notes") {
-                    TextField("Notes", text: $notes, axis: .vertical)
-                        .lineLimit(3...5)
                 }
+                .padding(24)
+                
+                Spacer()
             }
-            .navigationTitle("Add \(category.rawValue) Item")
+            .background(DesignSystem.Colors.background)
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Cancel") { dismiss() }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                    }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Add") {
+                ToolbarItem(placement: .principal) {
+                    Text("Add to \(category.rawValue)")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
                         addItem()
+                    } label: {
+                        Text("Done")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(name.isEmpty ? DesignSystem.Colors.textTertiary : DesignSystem.Colors.textPrimary)
                     }
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            .onAppear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    isNameFocused = true
         }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
     
     private func addItem() {
+        let now = Date()
         let item = PantryItemEntity(context: viewContext)
         item.id = UUID()
         item.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        item.quantity = quantity.trimmingCharacters(in: .whitespacesAndNewlines)
-        item.unit = unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.quantity = quantity.isEmpty ? "1" : quantity.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.unit = unit
         item.category = category.rawValue
-        item.createdDate = Date()
+        item.createdDate = now
+        item.modifiedDate = now
         item.expirationDate = hasExpiration ? expirationDate : nil
-        item.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        item.notes = ""
         
         do {
             try viewContext.save()

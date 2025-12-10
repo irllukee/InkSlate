@@ -14,23 +14,15 @@ import CoreData
 struct NotesListView: View {
     @Environment(\.managedObjectContext) private var viewContext
     
-    @FetchRequest(
-        sortDescriptors: [NSSortDescriptor(keyPath: \Notes.modifiedDate, ascending: false)],
-        predicate: NSPredicate(format: "isMarkedDeleted == NO")
-    ) private var normalNotes: FetchedResults<Notes>
-    
-    @FetchRequest(
-        sortDescriptors: [NSSortDescriptor(keyPath: \Notes.modifiedDate, ascending: false)],
-        predicate: NSPredicate(format: "isMarkedDeleted == YES")
-    ) private var deletedNotes: FetchedResults<Notes>
+    @FetchRequest private var normalNotes: FetchedResults<Notes>
+    @FetchRequest private var deletedNotes: FetchedResults<Notes>
 
     @FetchRequest(
         sortDescriptors: [NSSortDescriptor(keyPath: \FSProject.name, ascending: true)]
     ) private var projects: FetchedResults<FSProject>
 
-    @State private var searchText: String = ""
-    @State private var debouncedSearchText = ""
-    @State private var searchTimer: Timer?
+    @StateObject private var searchDebouncer = SearchDebouncer(delay: 0.4)
+    @State private var searchQuery: String = ""
 
     @State private var showingNewNoteSheet = false
     @State private var selectedNote: Notes?
@@ -54,6 +46,20 @@ struct NotesListView: View {
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var isLoading = false
+    
+    init() {
+        let defaultSort = [NSSortDescriptor(key: "modifiedDate", ascending: false)]
+        _normalNotes = FetchRequest(
+            sortDescriptors: defaultSort,
+            predicate: NSPredicate(format: "isMarkedDeleted == NO"),
+            animation: .default
+        )
+        _deletedNotes = FetchRequest(
+            sortDescriptors: defaultSort,
+            predicate: NSPredicate(format: "isMarkedDeleted == YES"),
+            animation: .default
+        )
+    }
     
     private var defaultProject: FSProject? {
         projects.first { $0.isDefault } ?? projects.first
@@ -85,48 +91,8 @@ struct NotesListView: View {
         }
     }
 
-    private var filteredNotes: [Notes] {
-        var notes = Array(showingDeletedNotes ? deletedNotes : normalNotes)
-        
-        // Filter by selected folder
-        if let selectedProject = selectedProject, !showingDeletedNotes {
-            // Show only notes in the selected folder
-            notes = notes.filter { $0.project == selectedProject }
-        } else if selectedProject == nil && !showingDeletedNotes {
-            // "All Notes" - show all notes regardless of folder
-            // Don't filter, show everything
-        }
-
-        if !debouncedSearchText.isEmpty {
-            let q = debouncedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let searchLower = q.lowercased()
-            
-            notes = notes.filter { note in
-                (note.title?.lowercased().contains(searchLower) ?? false) ||
-                (note.content?.lowercased().contains(searchLower) ?? false) ||
-                (note.preview?.lowercased().contains(searchLower) ?? false)
-            }
-        }
-
-        if showPinnedOnly && !showingDeletedNotes {
-            notes = notes.filter { $0.isPinned }
-        }
-
-        switch sortBy {
-        case .modificationDate:
-            notes.sort { sortDirection == .ascending ? ($0.modifiedDate ?? Date.distantPast) < ($1.modifiedDate ?? Date.distantPast) : ($0.modifiedDate ?? Date.distantPast) > ($1.modifiedDate ?? Date.distantPast) }
-        case .creationDate:
-            notes.sort { sortDirection == .ascending ? ($0.createdDate ?? Date.distantPast) < ($1.createdDate ?? Date.distantPast) : ($0.createdDate ?? Date.distantPast) > ($1.createdDate ?? Date.distantPast) }
-        case .title:
-            notes.sort { sortDirection == .ascending ? ($0.title ?? "") < ($1.title ?? "") : ($0.title ?? "") > ($1.title ?? "") }
-        case .pin:
-            notes.sort {
-                if sortDirection == .ascending { ($0.isPinned ? 0 : 1) < ($1.isPinned ? 0 : 1) }
-                else { ($0.isPinned ? 0 : 1) > ($1.isPinned ? 0 : 1) }
-            }
-        }
-
-        return notes
+    private var activeNotes: FetchedResults<Notes> {
+        showingDeletedNotes ? deletedNotes : normalNotes
     }
 
     var body: some View {
@@ -233,14 +199,11 @@ struct NotesListView: View {
                     purgeOldDeletedNotes()
                     loadLastSelectedFolder()
                 }
+                .onReceive(searchDebouncer.$debouncedText) { value in
+                    searchQuery = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
                 .onChange(of: selectedProject) { _, newValue in
                     saveLastSelectedFolder(newValue)
-                }
-            .onChange(of: searchText) { _, newValue in
-                searchTimer?.invalidate()
-                searchTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
-                    debouncedSearchText = newValue
-                    }
                 }
             }
         }
@@ -449,7 +412,7 @@ extension NotesListView {
     private var toolbarView: some View {
         VStack(spacing: 8) {
             HStack(spacing: 12) {
-                SearchBar(text: $searchText)
+                SearchBar(text: $searchDebouncer.searchText)
 
                 if !showingDeletedNotes {
                     Button {
@@ -501,11 +464,11 @@ extension NotesListView {
                 .font(.system(size: 48))
                 .foregroundColor(.gray)
 
-            Text(showingDeletedNotes ? "No deleted notes" : (searchText.isEmpty ? "No notes yet" : "No notes found"))
+            Text(showingDeletedNotes ? "No deleted notes" : (searchQuery.isEmpty ? "No notes yet" : "No notes found"))
                 .font(.headline)
                 .foregroundColor(.gray)
 
-            if !showingDeletedNotes && searchText.isEmpty {
+            if !showingDeletedNotes && searchQuery.isEmpty {
                 Text("Tap + to create your first note")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
@@ -564,7 +527,7 @@ extension NotesListView {
             }
         }
         .listStyle(.plain)
-        .animation(.easeInOut(duration: 0.2), value: filteredNotes.map(\.id))
+        .animation(.easeInOut(duration: 0.2), value: filteredNotes.map { $0.id })
     }
 
     private var trashHeaderView: some View {
@@ -687,6 +650,85 @@ extension NotesListView {
             errorMessage = "\(prefix): \(error.localizedDescription)"
             showingError = true
         }
+    }
+    
+    // Lazy filtering - FetchedResults is already lazy from Core Data
+    // We use lazy sequences to avoid materializing the entire collection upfront
+    // SwiftUI's List only renders visible items, so this is efficient
+    private var filteredNotes: [Notes] {
+        PerformanceLogger.measure(log: PerformanceMetrics.notesQuery, name: "FilterNotes") {
+            // FetchedResults is already lazy - only fetches objects as accessed
+            // Use lazy sequence for filtering to avoid materializing entire collection
+            let lazySequence = activeNotes.lazy
+            
+            // Apply filters lazily - only evaluates when iterated
+            // Use type erasure to handle the changing sequence types from chained filters
+            var filtered: AnySequence<Notes> = AnySequence(lazySequence)
+            
+            // Filter by project (lazy evaluation)
+            if let selectedProject = selectedProject, !showingDeletedNotes {
+                filtered = AnySequence(filtered.lazy.filter { $0.project == selectedProject })
+            }
+            
+            // Filter by pinned (lazy evaluation)
+            if showPinnedOnly && !showingDeletedNotes {
+                filtered = AnySequence(filtered.lazy.filter { $0.isPinned })
+            }
+            
+            // Filter by search (lazy evaluation)
+            if !searchDebouncer.debouncedText.isEmpty {
+                let searchLower = searchDebouncer.debouncedText.lowercased()
+                filtered = AnySequence(filtered.lazy.filter { note in
+                    (note.title?.lowercased().contains(searchLower) ?? false) ||
+                    (note.content?.lowercased().contains(searchLower) ?? false) ||
+                    (note.preview?.lowercased().contains(searchLower) ?? false)
+                })
+            }
+            
+            // Convert to array only when needed (SwiftUI ForEach requires concrete collection)
+            // The lazy sequence ensures we only process items as they're accessed during conversion
+            var result = Array(filtered)
+            
+            // Sort only the filtered results (in-place sort is efficient)
+            let ascending = sortDirection == .ascending
+            switch sortBy {
+            case .modificationDate:
+                result.sort { ascending ? ($0.modifiedDate ?? Date.distantPast) < ($1.modifiedDate ?? Date.distantPast) : ($0.modifiedDate ?? Date.distantPast) > ($1.modifiedDate ?? Date.distantPast) }
+            case .creationDate:
+                result.sort { ascending ? ($0.createdDate ?? Date.distantPast) < ($1.createdDate ?? Date.distantPast) : ($0.createdDate ?? Date.distantPast) > ($1.createdDate ?? Date.distantPast) }
+            case .title:
+                result.sort { ascending ? ($0.title ?? "") < ($1.title ?? "") : ($0.title ?? "") > ($1.title ?? "") }
+            case .pin:
+                result.sort {
+                    if ascending { ($0.isPinned ? 0 : 1) < ($1.isPinned ? 0 : 1) }
+                    else { ($0.isPinned ? 0 : 1) > ($1.isPinned ? 0 : 1) }
+                }
+            }
+            
+            return result
+        }
+    }
+    
+    private func buildSortDescriptors() -> [NSSortDescriptor] {
+        let ascending = sortDirection == .ascending
+        let primary: NSSortDescriptor
+        switch sortBy {
+        case .modificationDate:
+            primary = NSSortDescriptor(key: "modifiedDate", ascending: ascending)
+        case .creationDate:
+            primary = NSSortDescriptor(key: "createdDate", ascending: ascending)
+        case .title:
+            primary = NSSortDescriptor(key: "title", ascending: ascending, selector: #selector(NSString.localizedCaseInsensitiveCompare(_:)))
+        case .pin:
+            primary = NSSortDescriptor(key: "isPinned", ascending: ascending)
+        }
+        let secondary = NSSortDescriptor(key: "modifiedDate", ascending: false)
+        return [primary, secondary]
+    }
+    
+    private func buildSearchPredicate(with query: String) -> NSPredicate {
+        let format = "(title CONTAINS[cd] %@) OR (content CONTAINS[cd] %@) OR (preview CONTAINS[cd] %@)"
+        return NSPredicate(format: format, query, query, query)
     }
     
     private func deleteProject(_ project: FSProject) {
@@ -991,8 +1033,7 @@ struct TextEditorView: View {
     }
 
     private func startAutoSave() {
-        // Auto-save is handled by the debounced text change detection
-        // in the MarkdownEditor coordinator
+        // Auto-save is handled by scheduleAutoSave() called from markAsChanged()
     }
 
     private func stopAutoSave() {
@@ -1002,7 +1043,9 @@ struct TextEditorView: View {
 
     private func scheduleAutoSave() {
         autoSaveTimer?.invalidate()
-        autoSaveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { _ in
+        // Save quickly after typing stops (1.5 seconds) - feels instant like iOS Notes
+        // but still debounces to avoid saving on every single keystroke
+        autoSaveTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { _ in
             if hasUnsavedChanges { saveNote() }
         }
     }
@@ -1167,13 +1210,13 @@ struct NewNoteView: View {
 
         isSaving = true
         let newNote = Notes(context: viewContext)
+        newNote.id = UUID()  // Required for CloudKit sync
         newNote.title = title.isEmpty ? "Untitled" : title
         newNote.content = content
         newNote.project = project ?? selectedProject
         newNote.isMarkedDeleted = false
         newNote.createdDate = Date()
         newNote.modifiedDate = Date()
-        newNote.id = UUID()
         
         // Create preview without image markers
         let plain = MarkdownSerialization.plainText(from: content)

@@ -383,11 +383,12 @@ struct ModernQuoteCard: View {
     private func toggleFavorite() {
         withAnimation(.easeInOut(duration: 0.2)) {
             quote.isFavorite.toggle()
+            quote.modifiedDate = Date()
         }
         do {
             try viewContext.save()
         } catch {
-            // Handle error
+            print("Failed to toggle favorite: \(error)")
         }
     }
     
@@ -397,7 +398,7 @@ struct ModernQuoteCard: View {
             do {
                 try viewContext.save()
             } catch {
-                // Handle error
+                print("Failed to delete quote: \(error)")
             }
         }
     }
@@ -562,12 +563,11 @@ struct ModernAddQuoteView: View {
         newQuote.modifiedDate = Date()
         newQuote.isFavorite = false
         
-        viewContext.insert(newQuote)
         do {
             try viewContext.save()
             dismiss()
         } catch {
-            // Handle error
+            print("Failed to save new quote: \(error)")
         }
     }
 }
@@ -694,7 +694,7 @@ struct ModernEditQuoteView: View {
             try viewContext.save()
             dismiss()
         } catch {
-            // Handle error
+            print("Failed to save quote changes: \(error)")
         }
     }
 }
@@ -911,11 +911,12 @@ struct EnhancedModernQuoteDetailView: View {
     private func toggleFavorite() {
         withAnimation(.easeInOut(duration: 0.2)) {
             quote.isFavorite.toggle()
+            quote.modifiedDate = Date()
         }
         do {
             try viewContext.save()
         } catch {
-            // Handle error
+            print("Failed to toggle favorite: \(error)")
         }
     }
     
@@ -925,7 +926,7 @@ struct EnhancedModernQuoteDetailView: View {
             try viewContext.save()
             dismiss()
         } catch {
-            // Handle error
+            print("Failed to delete quote: \(error)")
         }
     }
 }

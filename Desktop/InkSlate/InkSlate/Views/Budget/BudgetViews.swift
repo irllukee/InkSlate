@@ -82,21 +82,29 @@ struct BudgetMainView: View {
     ) private var categories: FetchedResults<BudgetCategory>
     
     @FetchRequest(
-        sortDescriptors: [NSSortDescriptor(keyPath: \BudgetItem.date, ascending: false)]
-    ) private var budgetItems: FetchedResults<BudgetItem>
+        sortDescriptors: [NSSortDescriptor(keyPath: \BudgetItem.date, ascending: false)],
+        predicate: NSPredicate(format: "name == %@", "Monthly Income")
+    ) private var incomeItems: FetchedResults<BudgetItem>
     
     @FetchRequest(
-        sortDescriptors: []
+        sortDescriptors: [NSSortDescriptor(keyPath: \BudgetSubcategory.sortOrder, ascending: true)]
     ) private var subcategories: FetchedResults<BudgetSubcategory>
+    
     @StateObject private var budgetManager = BudgetManager.shared
     @State private var selectedItem: BudgetItem?
     @State private var showingCreateItem = false
     @State private var showingCreateCategory = false
     @State private var showingCategoryManagement = false
     @State private var newItem: BudgetItem?
-    @State private var selectedPeriod: Date = Date()
     @State private var showingIncomeInput = false
     @State private var showingResetAlert = false
+    @State private var showingErrorAlert = false
+    @State private var errorMessage = ""
+    
+    // Current period for budget calculations (can be extended for monthly views later)
+    private var currentPeriod: Date {
+        Date()
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -168,49 +176,56 @@ struct BudgetMainView: View {
         .sheet(isPresented: $showingIncomeInput) {
             MonthlyIncomeInputView(
                 income: .constant(monthlyIncome),
-                period: selectedPeriod,
                 onSave: { saveMonthlyIncome($0) }
             )
         }
     }
     
-    // UPDATED: No date filtering - just get the single monthly income
-    private func getMonthlyIncome() -> Double {
-        // Get the single monthly income (no date filtering)
-        let incomeItems = budgetItems.filter { item in
-            item.name == "Monthly Income"
-        }
-        return incomeItems.first?.amount ?? 0.0
+    private var monthlyIncome: Double {
+        incomeItems.first?.amount ?? 0.0
     }
     
-    // UPDATED: No date filtering - just update or create single income item
     private func saveMonthlyIncome(_ amount: Double) {
-        // Find existing monthly income item (no date filtering)
-        let incomeItems = budgetItems.filter { item in
-            item.name == "Monthly Income"
+        guard amount >= 0 else {
+            showError("Income amount cannot be negative")
+            return
+        }
+        
+        // Ensure only one income item exists
+        if incomeItems.count > 1 {
+            // Remove duplicates, keep the first one
+            for item in incomeItems.dropFirst() {
+                viewContext.delete(item)
+            }
         }
         
         if let existingItem = incomeItems.first {
-            // Update existing income
             existingItem.amount = amount
             existingItem.modifiedDate = Date()
         } else {
-            // Create new income item
             let incomeItem = BudgetItem(context: viewContext)
+            incomeItem.id = UUID()  // Required for CloudKit sync
             incomeItem.name = "Monthly Income"
             incomeItem.amount = amount
             incomeItem.date = Date()
-            // incomeItem.isIncome = true // Property doesn't exist in Core Data model
             incomeItem.createdDate = Date()
             incomeItem.modifiedDate = Date()
             viewContext.insert(incomeItem)
         }
         
+        viewContext.processPendingChanges()
+        
         do {
             try viewContext.save()
+            PersistenceController.shared.save()
         } catch {
-            
+            showError("Failed to save monthly income: \(error.localizedDescription)")
         }
+    }
+    
+    private func showError(_ message: String) {
+        errorMessage = message
+        showingErrorAlert = true
     }
     
     private var budgetContent: some View {
@@ -219,11 +234,10 @@ struct BudgetMainView: View {
                 // Summary cards
                 summaryCards
                 
-                // Category list
-                ForEach(categories.sorted(by: { $0.sortOrder < $1.sortOrder }), id: \.objectID) { category in
+                // Category list - @FetchRequest already sorted
+                ForEach(categories, id: \.objectID) { category in
                     CategoryCardView(
                         category: category,
-                        period: selectedPeriod,
                         budgetManager: budgetManager,
                         onItemTap: { item in
                             selectedItem = item
@@ -246,7 +260,7 @@ struct BudgetMainView: View {
                             do {
                                 try viewContext.save()
                             } catch {
-                                print("Failed to save new item: \(error)")
+                                showError("Failed to save new item: \(error.localizedDescription)")
                             }
                             
                             showingCreateItem = true
@@ -265,6 +279,11 @@ struct BudgetMainView: View {
             }
         } message: {
             Text("This will permanently delete all budget categories, subcategories, and items. This action cannot be undone.")
+        }
+        .alert("Error", isPresented: $showingErrorAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(errorMessage)
         }
     }
     
@@ -375,7 +394,6 @@ struct BudgetMainView: View {
     }
     
     // MARK: - Computed Properties
-    // UPDATED: No date filtering - just sum all budget items
     private var totalBudget: Double {
         subcategories.reduce(0.0) { total, subcategory in
             total + subcategory.budgetAmount
@@ -383,27 +401,16 @@ struct BudgetMainView: View {
     }
     
     private var totalSpent: Double {
-        categories.reduce(0.0) { total, category in
+        return categories.reduce(0.0) { total, category in
             guard let subcategories = category.subcategories else { return total }
             return total + subcategories.reduce(0.0) { subTotal, subcategory in
                 if let sub = subcategory as? BudgetSubcategory {
-                    return subTotal + budgetManager.calculateTotalSpent(for: sub, in: selectedPeriod)
+                    return subTotal + budgetManager.calculateTotalSpent(for: sub, in: currentPeriod)
                 } else {
                     return subTotal
                 }
             }
         }
-    }
-    
-    // UPDATED: No date filtering - just get the single monthly income
-    private var monthlyIncome: Double {
-        // Get the single monthly income item (no date filtering)
-        if let incomeItem = budgetItems.first(where: { item in
-            (item.name ?? "") == "Monthly Income"
-        }) {
-            return incomeItem.amount
-        }
-        return 0.0
     }
     
 }
@@ -444,10 +451,11 @@ struct SummaryCardView: View {
 struct MonthlyIncomeInputView: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var income: Double
-    let period: Date
     let onSave: (Double) -> Void
     
     @State private var incomeText: String = ""
+    @State private var showingErrorAlert = false
+    @State private var errorMessage = ""
     @FocusState private var isFieldFocused: Bool
     
     var body: some View {
@@ -459,7 +467,7 @@ struct MonthlyIncomeInputView: View {
                         .fontWeight(.bold)
                         .foregroundColor(DesignSystem.Colors.textPrimary)
                     
-                    Text("Enter your total monthly income for \(DateFormatter.monthYear.string(from: period))")
+                    Text("Enter your total monthly income")
                         .font(DesignSystem.Typography.body)
                         .foregroundColor(DesignSystem.Colors.textSecondary)
                 }
@@ -478,11 +486,15 @@ struct MonthlyIncomeInputView: View {
                             .multilineTextAlignment(.leading)
                             .textFieldStyle(.plain)
                             .focused($isFieldFocused)
-                            .onTapGesture {
-                                if incomeText == "0.00" || incomeText == "0" {
-                                    incomeText = ""
+                            .onChange(of: incomeText) { _, newValue in
+                                // Format as user types
+                                if !newValue.isEmpty && newValue != "0" {
+                                    // Allow only valid decimal input
+                                    let filtered = newValue.filter { "0123456789.".contains($0) }
+                                    if filtered != newValue {
+                                        incomeText = filtered
+                                    }
                                 }
-                                isFieldFocused = true
                             }
                     }
                     .padding(DesignSystem.Spacing.lg)
@@ -517,23 +529,33 @@ struct MonthlyIncomeInputView: View {
                 incomeText = income > 0 ? String(format: "%.2f", income) : ""
                 isFieldFocused = true
             }
+            .alert("Invalid Input", isPresented: $showingErrorAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(errorMessage)
+            }
         }
     }
     
     private func saveIncome() {
-        if let value = Double(incomeText) {
+        let cleanedText = incomeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let value = Double(cleanedText), value >= 0 {
             onSave(value)
-        } else {
+            dismiss()
+        } else if cleanedText.isEmpty {
             onSave(0.0)
+            dismiss()
+        } else {
+            // Invalid input - show error
+            errorMessage = "Please enter a valid amount (numbers and decimal point only)"
+            showingErrorAlert = true
         }
-        dismiss()
     }
 }
 
 // MARK: - Category Card View
 struct CategoryCardView: View {
     let category: BudgetCategory
-    let period: Date
     let budgetManager: BudgetManager
     let onItemTap: (BudgetItem) -> Void
     let onCreateItem: (String) -> Void
@@ -555,15 +577,13 @@ struct CategoryCardView: View {
         }
     }
     
-    // 5. Also update the totalSpent calculation to use actual data
     private var totalSpent: Double {
         guard let subcategories = category.subcategories else { return 0.0 }
+        let currentPeriod = Date()
         
         return subcategories.reduce(0.0) { total, subcategory in
             if let sub = subcategory as? BudgetSubcategory {
-                let spent = budgetManager.calculateTotalSpent(for: sub, in: period)
-                print("Spent for \(sub.name ?? "unknown"): $\(spent)")
-                return total + spent
+                return total + budgetManager.calculateTotalSpent(for: sub, in: currentPeriod)
             }
             return total
         }
@@ -581,28 +601,7 @@ struct CategoryCardView: View {
     }
     
     private var defaultSubcategories: [String] {
-        switch category.name {
-        case "🚗 Transportation":
-            return ["Car Payment", "Car Insurance", "Fuel / Gas", "Public Transit / Rideshare", "Parking / Tolls", "Maintenance & Repairs", "Vehicle Registration / Licensing"]
-        case "🏠 Housing & Utilities":
-            return ["Rent / Mortgage", "Property Taxes / HOA", "Home Insurance", "Electricity", "Water & Sewer", "Gas / Heating", "Internet", "Phone / Mobile", "Trash / Recycling", "Home Maintenance / Repairs"]
-        case "🛍️ Daily Living & Household":
-            return ["Groceries", "Household Supplies", "Personal Care", "Clothing & Shoes", "Childcare / Babysitting", "Pet Care", "Laundry / Dry Cleaning"]
-        case "🍽️ Food & Leisure":
-            return ["Dining Out / Takeout", "Coffee / Snacks", "Entertainment", "Hobbies", "Subscriptions / Memberships", "Vacations & Travel"]
-        case "💵 Financial Obligations":
-            return ["Income Taxes", "Debt Payments", "Insurance", "Investments", "Retirement Contributions", "Emergency Fund", "Savings Goals"]
-        case "🧠 Education & Personal Growth":
-            return ["School Tuition / Fees", "Books & Supplies", "Courses / Training", "Kids' Activities"]
-        case "🩺 Health & Wellness":
-            return ["Health Insurance Premiums", "Doctor / Dentist Visits", "Prescriptions / Medications", "Therapy / Counseling", "Fitness"]
-        case "🎁 Gifts & Giving":
-            return ["Charitable Donations", "Birthday / Holiday Gifts", "Special Occasions"]
-        case "📝 Miscellaneous":
-            return ["Miscellaneous Expenses", "Buffer / Unplanned", "Allowances"]
-        default:
-            return []
-        }
+        BudgetDefaultSubcategories.subcategories(for: category.name ?? "")
     }
     
     private var subcategoryNames: [String] {
@@ -796,19 +795,15 @@ struct CategoryCardView: View {
         subcategoryBudgets.removeAll()
         for name in subcategoryNames {
             guard let subcategory = findOrCreateSubcategory(named: name) else { continue }
-            
-            if subcategory.budgetAmount == 0,
-               let legacyAmount = legacyBudgetAmount(for: name) {
-                subcategory.budgetAmount = legacyAmount
-                subcategory.modifiedDate = Date()
-                removeLegacyBudgetItems(for: name)
-            }
-            
             subcategoryBudgets[name] = subcategory.budgetAmount
         }
         
         if viewContext.hasChanges {
-            try? viewContext.save()
+            do {
+                try viewContext.save()
+            } catch {
+                // Error will be handled by parent view if needed
+            }
         }
     }
     
@@ -824,40 +819,15 @@ struct CategoryCardView: View {
         subcategoryEntity.budgetAmount = amount
         subcategoryEntity.modifiedDate = Date()
         
-        removeLegacyBudgetItems(for: subcategory)
+        viewContext.processPendingChanges()
         
         do {
             try viewContext.save()
+            PersistenceController.shared.save()
         } catch {
-            print("Failed to save budget: \(error)")
+            // Log error - parent view can handle UI feedback if needed
+            print("Failed to save subcategory budget: \(error.localizedDescription)")
         }
-    }
-    
-    private func removeLegacyBudgetItems(for subcategoryName: String) {
-        let budgetName = "\(subcategoryName) Budget"
-        let request: NSFetchRequest<BudgetItem> = BudgetItem.fetchRequest()
-        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-            NSPredicate(format: "name == %@", budgetName),
-            NSPredicate(format: "subcategory.category == %@", category)
-        ])
-        let items = (try? viewContext.fetch(request)) ?? []
-        items.forEach { item in
-            viewContext.delete(item)
-        }
-    }
-    
-    private func legacyBudgetAmount(for subcategoryName: String) -> Double? {
-        let budgetName = "\(subcategoryName) Budget"
-        let request: NSFetchRequest<BudgetItem> = BudgetItem.fetchRequest()
-        request.fetchLimit = 1
-        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-            NSPredicate(format: "name == %@", budgetName),
-            NSPredicate(format: "subcategory.category == %@", category)
-        ])
-        guard let item = try? viewContext.fetch(request).first else {
-            return nil
-        }
-        return item.amount
     }
     
     private func addNewSubcategory() {
@@ -878,7 +848,7 @@ struct CategoryCardView: View {
         do {
             try viewContext.save()
         } catch {
-            print("Failed to add subcategory: \(error)")
+            print("Failed to add subcategory: \(error.localizedDescription)")
         }
         
         newSubcategoryName = ""
@@ -894,6 +864,7 @@ struct CategoryCardView: View {
         }
         
         let subcategory = BudgetSubcategory(context: viewContext)
+        subcategory.id = UUID()  // Required for CloudKit sync
         subcategory.name = name
         subcategory.category = category
         subcategory.budgetAmount = 0.0
@@ -980,17 +951,6 @@ struct BudgetItemRowView: View {
             
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(spacing: 4) {
-                    // Income/expense indicator removed - property doesn't exist
-                    // if item.isIncome {
-                    //     Image(systemName: "arrow.up.circle.fill")
-                    //         .font(.system(size: 12))
-                    //         .foregroundColor(DesignSystem.Colors.success)
-                    // } else {
-                    //     Image(systemName: "arrow.down.circle.fill")
-                    //         .font(.system(size: 12))
-                    //         .foregroundColor(DesignSystem.Colors.error)
-                    // }
-                    
                     Text(NumberFormatter.currency.string(from: NSNumber(value: item.amount)) ?? "$0.00")
                         .font(DesignSystem.Typography.body)
                         .fontWeight(.medium)
@@ -1191,6 +1151,9 @@ struct CategoryManagementView: View {
         sortDescriptors: [NSSortDescriptor(keyPath: \BudgetCategory.sortOrder, ascending: true)]
     ) private var categories: FetchedResults<BudgetCategory>
     
+    @State private var categoryToDelete: BudgetCategory?
+    @State private var showingDeleteConfirmation = false
+    
     var body: some View {
         NavigationView {
             List {
@@ -1211,23 +1174,13 @@ struct CategoryManagementView: View {
                         
                         Spacer()
                         
-                        if false { // isDefault property doesn't exist in Core Data model
-                            Text("Default")
+                        Button(action: {
+                            deleteCategory(category)
+                        }) {
+                            Label("Delete", systemImage: "trash")
                                 .font(DesignSystem.Typography.caption)
-                                .foregroundColor(DesignSystem.Colors.textTertiary)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(DesignSystem.Colors.backgroundSecondary)
-                                .cornerRadius(4)
-                        } else {
-                            Button(action: {
-                                deleteCategory(category)
-                            }) {
-                                Label("Delete", systemImage: "trash")
-                                    .font(DesignSystem.Typography.caption)
-                            }
-                            .foregroundColor(.red)
                         }
+                        .foregroundColor(.red)
                     }
                     .padding(.vertical, 4)
                 }
@@ -1243,31 +1196,62 @@ struct CategoryManagementView: View {
                     EditButton()
                 }
             }
+            .alert("Delete Category", isPresented: $showingDeleteConfirmation) {
+                Button("Cancel", role: .cancel) {
+                    categoryToDelete = nil
+                }
+                Button("Delete", role: .destructive) {
+                    confirmDeleteCategory()
+                }
+            } message: {
+                if let category = categoryToDelete {
+                    let subcategoryCount = category.subcategories?.count ?? 0
+                    let itemCount = (category.subcategories as? Set<BudgetSubcategory>)?.reduce(0) { total, sub in
+                        total + (sub.items?.count ?? 0)
+                    } ?? 0
+                    
+                    if subcategoryCount > 0 || itemCount > 0 {
+                        Text("This will delete the category and all \(subcategoryCount) subcategories with \(itemCount) items. This action cannot be undone.")
+                    } else {
+                        Text("Are you sure you want to delete this category?")
+                    }
+                }
+            }
         }
     }
     
     private func deleteCategory(_ category: BudgetCategory) {
+        categoryToDelete = category
+        showingDeleteConfirmation = true
+    }
+    
+    private func confirmDeleteCategory() {
+        guard let category = categoryToDelete else { return }
+        
         viewContext.delete(category)
         do {
             try viewContext.save()
         } catch {
-            
+            print("Failed to delete category: \(error.localizedDescription)")
         }
+        
+        categoryToDelete = nil
     }
     
     private func moveCategories(from source: IndexSet, to destination: Int) {
-        let mutableCategories = categories
-        // Note: FetchedResults doesn't support move operations directly
-        // This would need to be implemented with manual reordering
+        // Convert FetchedResults to array for manipulation
+        var categoryArray = Array(categories)
+        categoryArray.move(fromOffsets: source, toOffset: destination)
         
-        for (index, category) in mutableCategories.enumerated() {
+        // Update sortOrder for all categories
+        for (index, category) in categoryArray.enumerated() {
             category.sortOrder = Int16(index)
         }
         
         do {
             try viewContext.save()
         } catch {
-            
+            print("Failed to reorder categories: \(error.localizedDescription)")
         }
     }
 }
@@ -1308,18 +1292,13 @@ struct BudgetTrashView: View {
                     }
                     .padding(.vertical, 4)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button("Restore") {
-                            // Restore functionality not implemented in BudgetManager
-                            // For now, just delete the item permanently
-                            budgetManager.deleteBudgetItem(item, with: viewContext)
-                        }
-                        .tint(.green)
-                        
+                        // Note: Restore functionality requires isDeleted flag in Core Data model
+                        // For now, only permanent delete is available
                         Button("Delete Forever", role: .destructive) {
                             budgetManager.deleteBudgetItem(item, with: viewContext)
                         }
                         .tint(.red)
-                            }
+                    }
                         }
                     }
                 }

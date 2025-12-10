@@ -8,16 +8,14 @@ import Foundation
 
 // MARK: - Profile Service
 class ProfileService: ObservableObject {
-    @Published var userName: String = "Alex"
+    @Published var userName: String = "User"
     @Published var userIcon: String = "person.circle.fill"
-    @Published var userEmail: String = "alex@inkslate.app"
     @Published var userImage: UIImage?
     
     private let userDefaults = UserDefaults.standard
     private let cloudStore = NSUbiquitousKeyValueStore.default
     private let userNameKey = "profileUserName"
     private let userIconKey = "profileUserIcon"
-    private let userEmailKey = "profileUserEmail"
     private let userImageKey = "profileUserImage"
     private let imageFileName = "profile-user-image.jpg"
     
@@ -88,15 +86,6 @@ class ProfileService: ObservableObject {
             userIcon = "person.circle.fill"
         }
         
-        if let cloudEmail = cloudStore.string(forKey: userEmailKey), !cloudEmail.isEmpty {
-            userEmail = cloudEmail
-        } else if let localEmail = userDefaults.string(forKey: userEmailKey), !localEmail.isEmpty {
-            userEmail = localEmail
-            cloudStore.set(localEmail, forKey: userEmailKey)
-        } else {
-            userEmail = "user@inkslate.app"
-        }
-        
         if let storedImage = loadImageFromDisk() {
             userImage = storedImage
         } else if let legacyData = cloudStore.data(forKey: userImageKey) ?? userDefaults.data(forKey: userImageKey),
@@ -112,21 +101,18 @@ class ProfileService: ObservableObject {
         cloudStore.synchronize()
     }
     
-    func updateProfile(name: String, icon: String, email: String) {
+    func updateProfile(name: String, icon: String) {
         userName = name
         userIcon = icon
-        userEmail = email
         
         // Save to iCloud Key-Value Store for syncing
         cloudStore.set(name, forKey: userNameKey)
         cloudStore.set(icon, forKey: userIconKey)
-        cloudStore.set(email, forKey: userEmailKey)
         cloudStore.synchronize()
         
         // Also save locally as backup
         userDefaults.set(name, forKey: userNameKey)
         userDefaults.set(icon, forKey: userIconKey)
-        userDefaults.set(email, forKey: userEmailKey)
     }
     
     func updateProfileImage(_ image: UIImage) {
@@ -139,8 +125,7 @@ class ProfileService: ObservableObject {
     func resetToDefaults() {
         updateProfile(
             name: "User",
-            icon: "person.circle.fill",
-            email: "user@inkslate.app"
+            icon: "person.circle.fill"
         )
         removeStoredImage()
     }

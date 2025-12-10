@@ -185,7 +185,7 @@
         <attribute name="name" optional="YES" attributeType="String"/>
         <attribute name="notes" optional="YES" attributeType="String"/>
         <attribute name="overallRating" optional="YES" attributeType="Integer 16" defaultValueString="5" usesScalarValueType="YES"/>
-        <attribute name="photoData" optional="YES" attributeType="Binary"/>
+        <attribute name="photoURL" optional="YES" attributeType="String"/>
         <attribute name="postalCode" optional="YES" attributeType="String"/>
         <attribute name="priceRange" optional="YES" attributeType="String"/>
         <attribute name="priceRating" optional="YES" attributeType="Integer 16" defaultValueString="5" usesScalarValueType="YES"/>
@@ -309,20 +309,28 @@
         <relationship name="recipe" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Recipe" inverseName="ingredients" inverseEntity="Recipe"/>
     </entity>
     <entity name="ShoppingItemEntity" representedClassName="ShoppingItemEntity" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>ShoppingItemEntity</recordName>
+        </cloudKitConfiguration>
         <attribute name="amount" optional="YES" attributeType="String"/>
         <attribute name="category" optional="YES" attributeType="String"/>
         <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="fromRecipe" optional="YES" attributeType="String"/>
         <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
         <attribute name="isChecked" optional="YES" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="modifiedDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="name" optional="YES" attributeType="String"/>
         <attribute name="unit" optional="YES" attributeType="String"/>
     </entity>
     <entity name="PantryItemEntity" representedClassName="PantryItemEntity" syncable="YES" codeGenerationType="class">
+        <cloudKitConfiguration>
+            <recordName>PantryItemEntity</recordName>
+        </cloudKitConfiguration>
         <attribute name="category" optional="YES" attributeType="String"/>
         <attribute name="createdDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="expirationDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="modifiedDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="name" optional="YES" attributeType="String"/>
         <attribute name="notes" optional="YES" attributeType="String"/>
         <attribute name="quantity" optional="YES" attributeType="String"/>

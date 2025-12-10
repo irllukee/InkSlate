@@ -53,35 +53,33 @@ class AutoSaveManager: ObservableObject {
     }
     
     private func performSave() {
-        guard pendingSave else { return }
-        
-        
+        guard pendingSave, let context = managedObjectContext else { return }
+        pendingSave = false
+
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.isSaving = true
             self.lastSaveStatus = "Saving..."
         }
-        
-        
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+
+        context.perform { [weak self] in
             guard let self = self else { return }
-            
             do {
-                
-                try self.managedObjectContext?.save()
-                
+                try PerformanceLogger.measure(log: PerformanceMetrics.persistence, name: "AutoSaveSave") {
+                    if context.hasChanges {
+                        try context.save()
+                    }
+                }
+                let now = Date()
                 DispatchQueue.main.async {
-                    self.pendingSave = false
-                    self.lastSaveTime = Date()
+                    self.lastSaveTime = now
                     self.isSaving = false
-                    self.lastSaveStatus = "Saved at \(DateFormatter.timeFormatter.string(from: self.lastSaveTime))"
-                    // Successfully saved changes
+                    self.lastSaveStatus = "Saved at \(DateFormatter.timeFormatter.string(from: now))"
                 }
             } catch {
                 DispatchQueue.main.async {
                     self.isSaving = false
                     self.lastSaveStatus = "Save failed"
-                    // Handle save error silently
                 }
             }
         }
@@ -89,6 +87,7 @@ class AutoSaveManager: ObservableObject {
     
     func forceSave() {
         saveTimer?.invalidate()
+        pendingSave = true
         performSave()
     }
     
@@ -114,11 +113,6 @@ extension NSManagedObjectContext {
     func saveWithDebounce(using autoSaveManager: AutoSaveManager) {
         autoSaveManager.setManagedObjectContext(self)
         autoSaveManager.scheduleSave()
-        do {
-            try self.save()
-        } catch {
-            
-        }
     }
     
     func forceSave() {

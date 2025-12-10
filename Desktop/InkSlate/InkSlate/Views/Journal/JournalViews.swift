@@ -123,7 +123,6 @@ struct BookshelfView: View {
     ) private var books: FetchedResults<JournalBook>
     
     @State private var showingNewJournal = false
-    @State private var isRefreshing = false
     
     var body: some View {
         NavigationStack {
@@ -131,78 +130,58 @@ struct BookshelfView: View {
                 DesignSystem.Colors.background.ignoresSafeArea()
                 
                 if books.isEmpty {
-                    VStack(spacing: DesignSystem.Spacing.xl) {
-                        Image(systemName: "book.closed.fill")
-                            .font(.system(size: 48))
+                    VStack(spacing: DesignSystem.Spacing.lg) {
+                        Image(systemName: "book.closed")
+                            .font(.system(size: 44))
                             .foregroundColor(DesignSystem.Colors.textTertiary)
-                        Text("No Journals Yet")
-                            .font(DesignSystem.Typography.title2)
+                        Text("No Journals")
+                            .font(DesignSystem.Typography.title3)
                             .foregroundColor(DesignSystem.Colors.textPrimary)
-                        Text("Create your first journal to start writing.")
+                        Text("Tap + to create your first journal")
                             .font(DesignSystem.Typography.body)
                             .foregroundColor(DesignSystem.Colors.textSecondary)
-                        Button("Create Journal") {
-                            lightHaptic()
-                            showingNewJournal = true
-                        }
-                        .minimalistButton(variant: .primary, size: .medium)
                     }
                     .padding()
                 } else {
-                    ScrollView {
-                        RefreshControl(isRefreshing: $isRefreshing) {
-                            refreshData()
+                    List {
+                        ForEach(books) { book in
+                            NavigationLink {
+                                EntriesListView(book: book)
+                            } label: {
+                                JournalBookRow(book: book)
+                            }
+                            .listRowBackground(DesignSystem.Colors.surface)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                         }
-                        VStack(spacing: DesignSystem.Spacing.lg) {
-                            ForEach(books) { book in
-                                NavigationLink {
-                                    EntriesListView(book: book)
-                                } label: {
-                                    JournalBookCard(book: book)
-                                }
-                                .buttonStyle(.plain)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    if !book.isDailyJournal {
-                                        Button(role: .destructive) {
-                                            deleteBook(book)
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                    }
+                        .onDelete { indexSet in
+                            for index in indexSet {
+                                let book = books[index]
+                                if !book.isDailyJournal {
+                                    deleteBook(book)
                                 }
                             }
                         }
-                        .padding()
                     }
+                    .listStyle(.plain)
                 }
-        }
-        .navigationTitle("Journals")
-        .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-            Button {
-                        lightHaptic()
-                showingNewJournal = true
-            } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .tint(DesignSystem.Colors.accent)
-                    }
-                }
-        }
-        .sheet(isPresented: $showingNewJournal) {
-            NewJournalView()
-                    .presentationDetents([.fraction(0.5), .large])
-                    .presentationDragIndicator(.visible)
-        }
-        .onAppear {
-            createDefaultDailyJournalIfNeeded()
             }
-        }
-    }
-    
-    private func refreshData() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            try? viewContext.save()
-            isRefreshing = false
+            .navigationTitle("Journals")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        lightHaptic()
+                        showingNewJournal = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingNewJournal) {
+                NewJournalView()
+            }
+            .onAppear {
+                createDefaultDailyJournalIfNeeded()
+            }
         }
     }
     
@@ -215,74 +194,89 @@ struct BookshelfView: View {
     }
     
     private func createDefaultDailyJournalIfNeeded() {
-        guard !books.contains(where: { $0.isDailyJournal }) else { return }
-            let dailyJournal = JournalBook(context: viewContext)
-            dailyJournal.title = "Daily Journal"
-            dailyJournal.color = "#2E7D32"
-            dailyJournal.id = UUID()
-            dailyJournal.createdDate = Date()
-            dailyJournal.modifiedDate = Date()
+        let fetchRequest: NSFetchRequest<JournalBook> = JournalBook.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "title ==[c] %@", "Daily Journal")
+        fetchRequest.fetchLimit = 1
+        
+        if (try? viewContext.fetch(fetchRequest).first) != nil {
+            return
+        }
+        
+        guard !books.contains(where: { $0.title?.localizedCaseInsensitiveCompare("Daily Journal") == .orderedSame }) else {
+            return
+        }
+        
+        let dailyJournal = JournalBook(context: viewContext)
+        dailyJournal.title = "Daily Journal"
+        dailyJournal.color = "#2E7D32"
+        dailyJournal.id = UUID()
+        dailyJournal.createdDate = Date()
+        dailyJournal.modifiedDate = Date()
+        
         try? viewContext.save()
     }
 }
 
-// MARK: - Journal Book Card
-struct JournalBookCard: View {
+// MARK: - Journal Book Row
+struct JournalBookRow: View {
     let book: JournalBook
     
+    // Use FetchRequest for reactive entry count
+    @FetchRequest private var entries: FetchedResults<JournalEntry>
+    
+    init(book: JournalBook) {
+        self.book = book
+        _entries = FetchRequest(
+            sortDescriptors: [],
+            predicate: NSPredicate(format: "book == %@", book),
+            animation: .default
+        )
+    }
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-            HStack {
+        HStack(spacing: DesignSystem.Spacing.md) {
             Circle()
-                    .fill(Color(hex: book.color ?? "#007AFF") ?? DesignSystem.Colors.accent)
-                    .frame(width: 10, height: 10)
+                .fill(Color(hex: book.color ?? "#007AFF") ?? DesignSystem.Colors.accent)
+                .frame(width: 12, height: 12)
             
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: DesignSystem.Spacing.sm) {
                     Text(book.title ?? "Untitled")
-                    .font(DesignSystem.Typography.title3)
-                    .foregroundColor(DesignSystem.Colors.textPrimary)
+                        .font(DesignSystem.Typography.headline)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
                     
                     if book.isDailyJournal {
-                    Label("Daily", systemImage: "calendar")
-                        .labelStyle(.titleAndIcon)
-                        .font(DesignSystem.Typography.caption)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(DesignSystem.Colors.backgroundTertiary)
-                        .cornerRadius(DesignSystem.CornerRadius.sm)
-                    }
-                    
-                    Spacer()
-                }
-                
-                if book.isDailyJournal {
-                HStack(spacing: DesignSystem.Spacing.lg) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "flame.fill")
-                                .foregroundColor(.orange)
-                        Text("\(book.currentStreak) day streak")
+                        Text("Daily")
                             .font(DesignSystem.Typography.caption)
                             .foregroundColor(DesignSystem.Colors.textSecondary)
-                        }
-                        
-                        if book.longestStreak > 0 {
-                            HStack(spacing: 4) {
-                                Image(systemName: "trophy.fill")
-                                    .foregroundColor(.yellow)
-                                Text("Best: \(book.longestStreak)")
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(DesignSystem.Colors.backgroundTertiary)
+                            .cornerRadius(4)
+                    }
+                }
+                
+                HStack(spacing: DesignSystem.Spacing.md) {
+                    Text("\(entries.count) entries")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                    
+                    if book.isDailyJournal && book.currentStreak > 0 {
+                        HStack(spacing: 2) {
+                            Image(systemName: "flame.fill")
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                            Text("\(book.currentStreak)")
                                 .font(DesignSystem.Typography.caption)
                                 .foregroundColor(DesignSystem.Colors.textSecondary)
                         }
                     }
-                    Spacer()
                 }
-            } else {
-                Text("\(book.entries?.count ?? 0) entries")
-                    .font(DesignSystem.Typography.caption)
-                    .foregroundColor(DesignSystem.Colors.textSecondary)
             }
+            
+            Spacer()
         }
-        .padding(DesignSystem.Spacing.lg)
-        .minimalistCard(.elevated)
+        .padding(.vertical, DesignSystem.Spacing.xs)
     }
 }
 
@@ -290,92 +284,79 @@ struct JournalBookCard: View {
 struct NewJournalView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
-    @StateObject private var loadingManager = LoadingStateManager()
     @State private var title = ""
     @State private var selectedColor = "#2E7D32"
+    @FocusState private var isTitleFocused: Bool
     
     private let colors = [
         "#2E7D32", "#1565C0", "#E65100",
-        "#4A148C", "#C62828", "#F57F17"
+        "#4A148C", "#C62828", "#F57F17",
+        "#00838F", "#6A1B9A"
     ]
     
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: DesignSystem.Spacing.xl) {
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                        Text("Journal Name")
-                            .font(DesignSystem.Typography.callout)
-                            .foregroundColor(DesignSystem.Colors.textSecondary)
-                        TextField("Enter name", text: $title)
-                            .textFieldStyle(MinimalistInputFieldStyle(state: .normal))
-                    }
-                    
-                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                        Text("Color")
-                            .font(DesignSystem.Typography.callout)
-                            .foregroundColor(DesignSystem.Colors.textSecondary)
-                        
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6)) {
+            Form {
+                Section {
+                    TextField("Journal name", text: $title)
+                        .focused($isTitleFocused)
+                } header: {
+                    Text("Name")
+                }
+                
+                Section {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 8), spacing: 12) {
                         ForEach(colors, id: \.self) { color in
                             Button {
                                 selectedColor = color
-                                    lightHaptic()
+                                lightHaptic()
                             } label: {
                                 Circle()
                                     .fill(Color(hex: color) ?? .gray)
-                                        .frame(width: 32, height: 32)
+                                    .frame(width: 28, height: 28)
                                     .overlay(
-                                            Circle().stroke(
-                                                selectedColor == color ? DesignSystem.Colors.textPrimary : .clear,
-                                                lineWidth: 2
-                                            )
-                                        )
-                                }
-                                .buttonStyle(.plain)
+                                        Circle()
+                                            .stroke(Color.primary, lineWidth: selectedColor == color ? 2 : 0)
+                                            .padding(-2)
+                                    )
                             }
+                            .buttonStyle(.plain)
                         }
                     }
-                    
-                    Button {
-                        createJournal()
-                    } label: {
-                        Text("Create Journal")
-                            .font(DesignSystem.Typography.headline)
-                    }
-                    .minimalistButton(variant: .primary, size: .large)
-                    .disabled(title.isEmpty)
-                    .opacity(title.isEmpty ? 0.5 : 1.0)
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("Color")
                 }
-                .padding(DesignSystem.Spacing.xl)
             }
-            .background(DesignSystem.Colors.background)
             .navigationTitle("New Journal")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .foregroundColor(DesignSystem.Colors.accent)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") { createJournal() }
+                        .fontWeight(.semibold)
+                        .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            .onAppear {
+                isTitleFocused = true
+            }
         }
-        .loadingOverlay(loadingManager: loadingManager)
     }
     
     private func createJournal() {
-        loadingManager.startLoading(message: "Creating...")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            let journal = JournalBook(context: viewContext)
-            journal.title = title.isEmpty ? "New Journal" : title
-            journal.color = selectedColor
-            journal.id = UUID()
-            journal.createdDate = Date()
-            journal.modifiedDate = Date()
-            viewContext.insert(journal)
-            try? viewContext.save()
-                loadingManager.stopLoading()
-                dismiss()
-            lightHaptic()
-        }
+        let journal = JournalBook(context: viewContext)
+        journal.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        journal.color = selectedColor
+        journal.id = UUID()
+        journal.createdDate = Date()
+        journal.modifiedDate = Date()
+        viewContext.insert(journal)
+        try? viewContext.save()
+        lightHaptic()
+        dismiss()
     }
 }
 
@@ -383,48 +364,58 @@ struct NewJournalView: View {
 struct EntriesListView: View {
     let book: JournalBook
     @Environment(\.managedObjectContext) private var viewContext
-    @StateObject private var loadingManager = LoadingStateManager()
     @State private var showingNewEntry = false
+    @State private var newEntryTitle = ""
     @State private var newEntryText = ""
     @State private var wordCount = 0
     @State private var isRefreshing = false
     @FocusState private var isComposerFocused: Bool
     
+    // Use FetchRequest for reactive updates
+    @FetchRequest private var entries: FetchedResults<JournalEntry>
+    
+    init(book: JournalBook) {
+        self.book = book
+        _entries = FetchRequest(
+            sortDescriptors: [NSSortDescriptor(keyPath: \JournalEntry.createdDate, ascending: false)],
+            predicate: NSPredicate(format: "book == %@", book),
+            animation: .default
+        )
+    }
+    
     var accentColor: Color { Color(hex: book.color ?? "#007AFF") ?? DesignSystem.Colors.accent }
     
     var sortedEntries: [JournalEntry] {
-        guard let entries = book.entries else { return [] }
-        return (entries.allObjects as? [JournalEntry])?.sorted {
-            ($0.createdDate ?? .distantPast) > ($1.createdDate ?? .distantPast)
-        } ?? []
+        Array(entries)
     }
     
     var body: some View {
-        NavigationStack {
-            ZStack {
-                DesignSystem.Colors.background.ignoresSafeArea()
-                
-                ScrollView {
-                    RefreshControl(isRefreshing: $isRefreshing) {
-                        refreshData()
+        ZStack {
+            DesignSystem.Colors.background.ignoresSafeArea()
+            
+            ScrollView {
+                RefreshControl(isRefreshing: $isRefreshing) {
+                    refreshData()
+                }
+                VStack(spacing: DesignSystem.Spacing.md) {
+                    if book.isDailyJournal {
+                        TodayQuickEntryCard(
+                            title: $newEntryTitle,
+                            text: $newEntryText,
+                            wordCount: $wordCount,
+                            accentColor: accentColor,
+                            onCommit: saveInlineEntry
+                        )
+                        .focused($isComposerFocused)
+                        .padding(.horizontal, DesignSystem.Spacing.lg)
+                        .padding(.top, DesignSystem.Spacing.md)
                     }
-                    VStack(spacing: DesignSystem.Spacing.md) {
-                        if book.isDailyJournal {
-                            TodayQuickEntryCard(
-                                text: $newEntryText,
-                                wordCount: $wordCount,
-                                accentColor: accentColor,
-                                onCommit: saveInlineEntry
-                            )
-                            .focused($isComposerFocused)
-                            .padding(.horizontal, DesignSystem.Spacing.lg)
-                            .padding(.top, DesignSystem.Spacing.lg)
-                        }
-                        
-                        if sortedEntries.isEmpty {
-                            EmptyEntriesState(accentColor: accentColor)
-                                .padding(DesignSystem.Spacing.lg)
-                        } else {
+                    
+                    if sortedEntries.isEmpty && !book.isDailyJournal {
+                        EmptyEntriesState(accentColor: accentColor)
+                            .padding(DesignSystem.Spacing.lg)
+                    } else if !sortedEntries.isEmpty {
+                        VStack(spacing: DesignSystem.Spacing.sm) {
                             ForEach(sortedEntries) { entry in
                                 NavigationLink {
                                     EditEntryView(book: book, entry: entry)
@@ -432,7 +423,7 @@ struct EntriesListView: View {
                                     EntryRow(entry: entry)
                                 }
                                 .buttonStyle(.plain)
-                                .swipeActions {
+                                .contextMenu {
                                     Button(role: .destructive) {
                                         delete(entry)
                                     } label: {
@@ -441,34 +432,32 @@ struct EntriesListView: View {
                                 }
                             }
                         }
+                        .padding(.top, DesignSystem.Spacing.sm)
                     }
-                    .padding(.bottom, DesignSystem.Spacing.lg)
                 }
+                .padding(.bottom, DesignSystem.Spacing.xl)
+            }
         }
         .navigationTitle(book.title ?? "Journal")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-            Button {
-                        lightHaptic()
-                showingNewEntry = true
-            } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .tint(accentColor)
-                    }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    lightHaptic()
+                    showingNewEntry = true
+                } label: {
+                    Image(systemName: "plus")
                 }
             }
-            .sheet(isPresented: $showingNewEntry) {
-                NewEntryView(book: book)
-                    .presentationDetents([.fraction(0.5), .large])
-                    .presentationDragIndicator(.visible)
-            }
         }
-        .loadingOverlay(loadingManager: loadingManager)
+        .sheet(isPresented: $showingNewEntry) {
+            NewEntryView(book: book)
+        }
     }
     
     private func saveInlineEntry() {
         guard !newEntryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let entry = JournalEntry(context: viewContext)
+        entry.title = newEntryTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : newEntryTitle
         entry.content = newEntryText
         entry.createdDate = Date()
         entry.modifiedDate = Date()
@@ -476,6 +465,7 @@ struct EntriesListView: View {
         entry.book = book
         viewContext.insert(entry)
         withAnimation(.spring) { try? viewContext.save() }
+        newEntryTitle = ""
         newEntryText = ""
         wordCount = 0
         isComposerFocused = false
@@ -491,8 +481,8 @@ struct EntriesListView: View {
     }
     
     private func refreshData() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            try? viewContext.save()
+        viewContext.refreshAllObjects()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             isRefreshing = false
         }
     }
@@ -500,6 +490,7 @@ struct EntriesListView: View {
 
 // MARK: - Today Quick Entry Card
 struct TodayQuickEntryCard: View {
+    @Binding var title: String
     @Binding var text: String
     @Binding var wordCount: Int
     var accentColor: Color
@@ -508,8 +499,8 @@ struct TodayQuickEntryCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DesignSystem.Spacing.md) {
             HStack {
-                Text("Today")
-                    .font(DesignSystem.Typography.title3)
+                Text("Today's Entry")
+                    .font(DesignSystem.Typography.headline)
                     .foregroundColor(DesignSystem.Colors.textPrimary)
                 Spacer()
                 Text("\(wordCount) words")
@@ -517,16 +508,18 @@ struct TodayQuickEntryCard: View {
                     .foregroundColor(DesignSystem.Colors.textSecondary)
             }
             
+            TextField("Title (optional)", text: $title)
+                .font(DesignSystem.Typography.body)
+                .padding(DesignSystem.Spacing.sm)
+                .background(DesignSystem.Colors.backgroundSecondary)
+                .cornerRadius(DesignSystem.CornerRadius.sm)
+            
             TextEditor(text: $text)
                 .font(DesignSystem.Typography.body)
-                .frame(minHeight: 120)
-                .padding(DesignSystem.Spacing.md)
-                .background(DesignSystem.Colors.surface)
-                .cornerRadius(DesignSystem.CornerRadius.md)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignSystem.CornerRadius.md)
-                        .stroke(DesignSystem.Colors.border, lineWidth: 0.5)
-                )
+                .frame(minHeight: 100)
+                .scrollContentBackground(.hidden)
+                .background(DesignSystem.Colors.backgroundSecondary)
+                .cornerRadius(DesignSystem.CornerRadius.sm)
                 .onChange(of: text) { _, newValue in
                     wordCount = newValue
                         .components(separatedBy: .whitespacesAndNewlines)
@@ -534,57 +527,67 @@ struct TodayQuickEntryCard: View {
                         .count
                 }
             
-            HStack {
-                Spacer()
-                Button {
-                    onCommit()
-                } label: {
-                    Label("Save Entry", systemImage: "square.and.arrow.down.fill")
-                        .labelStyle(.titleAndIcon)
-                        .font(DesignSystem.Typography.button)
-                        .foregroundColor(DesignSystem.Colors.textInverse)
-                        .padding(.horizontal, DesignSystem.Spacing.xl)
-                        .padding(.vertical, DesignSystem.Spacing.md)
-                        .background(accentColor)
-                        .cornerRadius(DesignSystem.CornerRadius.lg)
-                }
-                .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
-                .opacity(text.isEmpty ? 0.5 : 1.0)
+            Button {
+                onCommit()
+            } label: {
+                Text("Save Entry")
+                    .font(DesignSystem.Typography.button)
+                    .fontWeight(.medium)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, DesignSystem.Spacing.md)
+                    .background(text.trimmingCharacters(in: .whitespaces).isEmpty ? Color.gray : accentColor)
+                    .cornerRadius(DesignSystem.CornerRadius.md)
             }
+            .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .padding(DesignSystem.Spacing.lg)
-        .minimalistCard(.outlined)
+        .background(DesignSystem.Colors.surface)
+        .cornerRadius(DesignSystem.CornerRadius.lg)
     }
 }
 
 // MARK: - Entry Row
 struct EntryRow: View {
     let entry: JournalEntry
+    
+    private var displayTitle: String {
+        if let title = entry.title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return title
+        }
+        // Use first line of content as fallback title
+        let content = entry.content ?? ""
+        let firstLine = content.components(separatedBy: .newlines).first ?? ""
+        let trimmed = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Untitled" : String(trimmed.prefix(50))
+    }
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
+        VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+            // Date
             Text(entry.createdDate ?? Date(), style: .date)
                 .font(DesignSystem.Typography.caption)
                 .foregroundColor(DesignSystem.Colors.textSecondary)
-            Text((entry.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
-                .font(DesignSystem.Typography.body)
+            
+            // Title
+            Text(displayTitle)
+                .font(DesignSystem.Typography.headline)
                 .foregroundColor(DesignSystem.Colors.textPrimary)
-                .lineLimit(3)
-            if let metadata = entry.promptMetadata {
-                HStack(spacing: DesignSystem.Spacing.xs) {
-                    Image(systemName: "sparkles")
-                        .font(.caption)
-                        .foregroundColor(DesignSystem.Colors.accent)
-                    Text(metadata.prompt)
-                        .font(DesignSystem.Typography.caption)
-                        .foregroundColor(DesignSystem.Colors.textSecondary)
-                        .lineLimit(2)
-                }
+                .lineLimit(1)
+            
+            // Content Preview
+            if let content = entry.content, !content.isEmpty {
+                Text(content.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .font(DesignSystem.Typography.body)
+                    .foregroundColor(DesignSystem.Colors.textSecondary)
+                    .lineLimit(2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(DesignSystem.Spacing.md)
+        .background(DesignSystem.Colors.surface)
+        .cornerRadius(DesignSystem.CornerRadius.md)
         .padding(.horizontal, DesignSystem.Spacing.lg)
-        .padding(.vertical, DesignSystem.Spacing.md)
-        .minimalistCard(.elevated)
     }
 }
 
@@ -613,175 +616,93 @@ struct NewEntryView: View {
     let book: JournalBook
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
-    @StateObject private var loadingManager = LoadingStateManager()
+    @State private var title = ""
     @State private var text = ""
-    @State private var wordCount = 0
     @State private var date = Date()
-    @State private var selectedPrompt = ""
-    @State private var selectedPromptCategory = PromptCategory.reflection.rawValue
-    @State private var selectedPromptType: PromptType = .reflection
-    @State private var showingPromptPicker = false
+    @FocusState private var focusedField: Field?
+    
+    enum Field { case title, content }
     
     var accentColor: Color { Color(hex: book.color ?? "#007AFF") ?? DesignSystem.Colors.accent }
     
     var body: some View {
         NavigationStack {
-            VStack(spacing: DesignSystem.Spacing.xl) {
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
-                    HStack {
-                        Text("Prompt")
+            ScrollView {
+                VStack(spacing: DesignSystem.Spacing.lg) {
+                    // Title Field
+                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
+                        Text("Title")
                             .font(DesignSystem.Typography.caption)
                             .foregroundColor(DesignSystem.Colors.textSecondary)
-                        Spacer()
-                        if !selectedPrompt.isEmpty {
-                            Button("Clear") {
-                                selectedPrompt = ""
-                                selectedPromptCategory = PromptCategory.reflection.rawValue
-                                selectedPromptType = .reflection
-                            }
-                            .font(DesignSystem.Typography.caption)
-                            .foregroundColor(DesignSystem.Colors.accent)
-                        }
+                        TextField("Entry title (optional)", text: $title)
+                            .font(DesignSystem.Typography.title3)
+                            .focused($focusedField, equals: .title)
                     }
+                    .padding(DesignSystem.Spacing.md)
+                    .background(DesignSystem.Colors.surface)
+                    .cornerRadius(DesignSystem.CornerRadius.md)
                     
-                    if selectedPrompt.isEmpty {
-                        Button {
-                            showingPromptPicker = true
-                            lightHaptic()
-                        } label: {
-                            HStack {
-                                Image(systemName: "sparkles")
-                                Text("Choose Writing Prompt")
-                                    .fontWeight(.medium)
-                            }
-                            .font(DesignSystem.Typography.body)
-                            .foregroundColor(DesignSystem.Colors.textInverse)
-                            .padding(.vertical, DesignSystem.Spacing.md)
-                            .frame(maxWidth: .infinity)
-                            .background(accentColor)
-                            .cornerRadius(DesignSystem.CornerRadius.md)
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
-                            Text(selectedPrompt)
-                                .font(DesignSystem.Typography.body)
-                                .foregroundColor(DesignSystem.Colors.textPrimary)
-                                .multilineTextAlignment(.leading)
-                            
-                            HStack(spacing: DesignSystem.Spacing.xs) {
-                                Image(systemName: "tag")
-                                    .font(.caption)
-                                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                                Text(selectedPromptCategory.capitalized)
-                                    .font(DesignSystem.Typography.caption)
-                                    .foregroundColor(DesignSystem.Colors.textSecondary)
-                                Spacer()
-                                Button("Change Prompt") {
-                                    showingPromptPicker = true
-                                    lightHaptic()
-                                }
-                                .font(DesignSystem.Typography.caption)
-                                .foregroundColor(DesignSystem.Colors.accent)
-                            }
-                        }
-                        .padding(DesignSystem.Spacing.md)
-                        .background(DesignSystem.Colors.surface)
-                        .cornerRadius(DesignSystem.CornerRadius.md)
-                    }
-                }
-                .padding(DesignSystem.Spacing.lg)
-                .background(DesignSystem.Colors.backgroundTertiary)
-                .cornerRadius(DesignSystem.CornerRadius.md)
-                
-                VStack(alignment: .leading, spacing: DesignSystem.Spacing.sm) {
+                    // Date Picker
                     HStack {
-                            Text("Date")
-                            .font(DesignSystem.Typography.caption)
+                        Text("Date")
+                            .font(DesignSystem.Typography.body)
                             .foregroundColor(DesignSystem.Colors.textSecondary)
                         Spacer()
                         DatePicker("", selection: $date, displayedComponents: .date)
                             .labelsHidden()
                     }
-                    
-                            HStack {
-                        Text("Words")
-                            .font(DesignSystem.Typography.caption)
-                            .foregroundColor(DesignSystem.Colors.textSecondary)
-                                Spacer()
-                        Text("\(wordCount)")
-                            .font(DesignSystem.Typography.caption)
-                    }
-                }
-                .padding(DesignSystem.Spacing.lg)
-                .background(DesignSystem.Colors.backgroundTertiary)
-                .cornerRadius(DesignSystem.CornerRadius.md)
-                
-                TextEditor(text: $text)
-                    .font(DesignSystem.Typography.body)
-                    .padding()
+                    .padding(DesignSystem.Spacing.md)
                     .background(DesignSystem.Colors.surface)
                     .cornerRadius(DesignSystem.CornerRadius.md)
-                        .onChange(of: text) { _, newValue in
-                        wordCount = newValue.split { $0.isWhitespace || $0.isNewline }.count
+                    
+                    // Content Field
+                    VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
+                        Text("Content")
+                            .font(DesignSystem.Typography.caption)
+                            .foregroundColor(DesignSystem.Colors.textSecondary)
+                        
+                        TextEditor(text: $text)
+                            .font(DesignSystem.Typography.body)
+                            .frame(minHeight: 200)
+                            .focused($focusedField, equals: .content)
                     }
-                
-                Button("Save Entry") { saveEntry() }
-                    .minimalistButton(variant: .primary, size: .large)
-                    .disabled(text.isEmpty)
-                    .opacity(text.isEmpty ? 0.5 : 1)
+                    .padding(DesignSystem.Spacing.md)
+                    .background(DesignSystem.Colors.surface)
+                    .cornerRadius(DesignSystem.CornerRadius.md)
+                }
+                .padding(DesignSystem.Spacing.lg)
             }
-            .padding()
+            .background(DesignSystem.Colors.background)
             .navigationTitle("New Entry")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .foregroundColor(accentColor)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { saveEntry() }
+                        .fontWeight(.semibold)
+                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-        }
-        .loadingOverlay(loadingManager: loadingManager)
-        .sheet(isPresented: $showingPromptPicker) {
-            PromptPickerView(
-                selectedPrompt: $selectedPrompt,
-                selectedPromptCategory: $selectedPromptCategory,
-                selectedPromptType: $selectedPromptType
-            )
-            .presentationDetents([.fraction(0.5), .large])
-            .presentationDragIndicator(.visible)
-        }
-        .onChange(of: selectedPrompt) { _, newValue in
-            guard !newValue.isEmpty, text.isEmpty else { return }
-            text = newValue + "\n\n"
+            .onAppear {
+                focusedField = .title
+            }
         }
     }
     
     private func saveEntry() {
-        loadingManager.startLoading(message: "Saving entry...")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            let entry = JournalEntry(context: viewContext)
-            entry.content = text
-            entry.createdDate = date
-            entry.modifiedDate = Date()
-            entry.id = UUID()
-            entry.book = book
-            if !selectedPrompt.isEmpty {
-                let metadata = JournalPromptMetadata(
-                    prompt: selectedPrompt,
-                    category: selectedPromptCategory,
-                    type: selectedPromptType.rawValue
-                )
-                if let data = try? promptMetadataEncoder.encode(metadata),
-                   let json = String(data: data, encoding: .utf8) {
-                    entry.tags = json
-                }
-            }
-            viewContext.insert(entry)
-            withAnimation { try? viewContext.save() }
-                loadingManager.stopLoading()
-                dismiss()
-            lightHaptic()
-        }
+        let entry = JournalEntry(context: viewContext)
+        entry.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title
+        entry.content = text
+        entry.createdDate = date
+        entry.modifiedDate = Date()
+        entry.id = UUID()
+        entry.book = book
+        viewContext.insert(entry)
+        try? viewContext.save()
+        lightHaptic()
+        dismiss()
     }
 }
 
@@ -791,50 +712,87 @@ struct EditEntryView: View {
     let entry: JournalEntry
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
-    @StateObject private var loadingManager = LoadingStateManager()
+    @State private var title: String
     @State private var text: String
+    @FocusState private var focusedField: Field?
+    
+    enum Field { case title, content }
     
     init(book: JournalBook, entry: JournalEntry) {
         self.book = book
         self.entry = entry
+        _title = State(initialValue: entry.title ?? "")
         _text = State(initialValue: entry.content ?? "")
     }
     
     var body: some View {
-        NavigationStack {
-            VStack {
-            TextEditor(text: $text)
-                    .font(DesignSystem.Typography.body)
-                    .padding()
-                    .background(DesignSystem.Colors.surface)
-                    .cornerRadius(DesignSystem.CornerRadius.md)
-                Spacer()
+        ScrollView {
+            VStack(spacing: DesignSystem.Spacing.lg) {
+                // Title Field
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
+                    Text("Title")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                    TextField("Entry title (optional)", text: $title)
+                        .font(DesignSystem.Typography.title3)
+                        .focused($focusedField, equals: .title)
+                }
+                .padding(DesignSystem.Spacing.md)
+                .background(DesignSystem.Colors.surface)
+                .cornerRadius(DesignSystem.CornerRadius.md)
+                
+                // Date Display
+                HStack {
+                    Text("Created")
+                        .font(DesignSystem.Typography.body)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                    Spacer()
+                    Text(entry.createdDate ?? Date(), style: .date)
+                        .font(DesignSystem.Typography.body)
+                        .foregroundColor(DesignSystem.Colors.textPrimary)
+                }
+                .padding(DesignSystem.Spacing.md)
+                .background(DesignSystem.Colors.surface)
+                .cornerRadius(DesignSystem.CornerRadius.md)
+                
+                // Content Field
+                VStack(alignment: .leading, spacing: DesignSystem.Spacing.xs) {
+                    Text("Content")
+                        .font(DesignSystem.Typography.caption)
+                        .foregroundColor(DesignSystem.Colors.textSecondary)
+                    
+                    TextEditor(text: $text)
+                        .font(DesignSystem.Typography.body)
+                        .frame(minHeight: 300)
+                        .focused($focusedField, equals: .content)
+                }
+                .padding(DesignSystem.Spacing.md)
+                .background(DesignSystem.Colors.surface)
+                .cornerRadius(DesignSystem.CornerRadius.md)
             }
-                .padding()
-                .navigationTitle("Edit Entry")
-                .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                    ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { saveEntry() }
-                        .foregroundColor(DesignSystem.Colors.accent)
-                }
-                }
+            .padding(DesignSystem.Spacing.lg)
         }
-        .loadingOverlay(loadingManager: loadingManager)
+        .background(DesignSystem.Colors.background)
+        .navigationTitle("Edit Entry")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { saveEntry() }
+                    .fontWeight(.semibold)
+            }
+        }
     }
     
     private func saveEntry() {
-        loadingManager.startLoading(message: "Saving...")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            entry.content = text
-            entry.modifiedDate = Date()
-            withAnimation { try? viewContext.save() }
-                loadingManager.stopLoading()
-                dismiss()
-            lightHaptic()
-        }
+        entry.title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title
+        entry.content = text
+        entry.modifiedDate = Date()
+        try? viewContext.save()
+        lightHaptic()
+        dismiss()
     }
 }
 

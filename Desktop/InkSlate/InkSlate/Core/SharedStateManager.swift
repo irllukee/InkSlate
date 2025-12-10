@@ -19,6 +19,7 @@ class SharedStateManager: ObservableObject {
     
     
     @Published var showSplashScreen = true
+    @Published var isMenuOpen = false
     
     
     private init() {
@@ -27,6 +28,12 @@ class SharedStateManager: ObservableObject {
     
     func hideSplashScreen() {
         showSplashScreen = false
+    }
+    
+    func toggleMenu() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            isMenuOpen.toggle()
+        }
     }
     
     func resetToDefaults() {

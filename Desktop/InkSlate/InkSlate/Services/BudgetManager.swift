@@ -25,6 +25,7 @@ class BudgetManager: ObservableObject {
         with context: NSManagedObjectContext
     ) -> BudgetCategory {
         let category = BudgetCategory(context: context)
+        category.id = UUID()  // Required for CloudKit sync
         category.name = name
         category.icon = icon
         category.color = color
@@ -65,6 +66,7 @@ class BudgetManager: ObservableObject {
         }
         
         let subcategory = BudgetSubcategory(context: context)
+        subcategory.id = UUID()  // Required for CloudKit sync
         subcategory.name = name
         subcategory.category = category
         subcategory.budgetAmount = budgetAmount
@@ -86,6 +88,7 @@ class BudgetManager: ObservableObject {
     
     func createBudgetItem(name: String, amount: Double, subcategory: BudgetSubcategory?, with context: NSManagedObjectContext) -> BudgetItem {
         let item = BudgetItem(context: context)
+        item.id = UUID()  // Required for CloudKit sync
         item.name = name
         item.amount = amount
         item.date = Date()
@@ -231,10 +234,13 @@ class BudgetManager: ObservableObject {
     }
     
     private func saveContext(_ context: NSManagedObjectContext) {
+        guard context.hasChanges else { return }
+        
         do {
             try context.save()
         } catch {
-            print("Failed to save context: \(error)")
+            // Log error but don't crash - let calling code handle UI feedback
+            print("Failed to save context: \(error.localizedDescription)")
         }
     }
 }
